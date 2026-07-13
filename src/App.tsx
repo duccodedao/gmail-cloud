@@ -17,6 +17,7 @@ import {
   Activity
 } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
+import { FloatingCodeBubble } from "./components/FloatingCodeBubble";
 import { Header } from "./components/Header";
 import { StatsCards } from "./components/StatsCards";
 import { AccountTable } from "./components/AccountTable";
@@ -981,6 +982,7 @@ export default function App() {
       {/* Custom Toast Alert Center */}
       <ToastContainer toasts={toasts} onClose={removeToast} />
 
+      <FloatingCodeBubble />
     </div>
   );
 }
