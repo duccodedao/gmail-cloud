@@ -1,0 +1,200 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Clean Minimalism Color Palette overrides */
+  --color-primary: #4285F4;
+  --color-success-light: #DCFCE7;
+  --color-success-dark: #166534;
+  --color-warning-light: #FEF3C7;
+  --color-warning-dark: #92400E;
+  --color-danger-light: #FEE2E2;
+  --color-danger-dark: #991B1B;
+}
+
+/* Custom modern transitions and properties */
+html, body {
+  font-family: var(--font-sans);
+  background-color: #f8fafc;
+  color: #1e293b;
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Dark mode basic body background override */
+.dark body {
+  background-color: #0f172a;
+  color: #f8fafc;
+}
+
+/* Scrollbar tuning for dashboard look */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.2);
+  border-radius: 99px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.4);
+}
+
+/* Selection aesthetics */
+::selection {
+  background: rgba(66, 133, 244, 0.15);
+  color: #4285F4;
+}
+
+.dark ::selection {
+  background: rgba(66, 133, 244, 0.3);
+  color: #60a5fa;
+}
+
+/* Stat card gradient glow from the Clean Minimalism Design */
+.stat-card-glow {
+  position: absolute;
+  top: -15%;
+  right: -15%;
+  width: 90px;
+  height: 90px;
+  border-radius: 9999px;
+  filter: blur(40px);
+  opacity: 0.15;
+  pointer-events: none;
+}
+
+/* Clean minimalist badge designs */
+.minimal-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.minimal-badge-success {
+  background-color: #dcfce7;
+  color: #15803d;
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+.dark .minimal-badge-success {
+  background-color: rgba(22, 101, 52, 0.2);
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.25);
+}
+
+.minimal-badge-warning {
+  background-color: #fef3c7;
+  color: #b45309;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+.dark .minimal-badge-warning {
+  background-color: rgba(146, 64, 14, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.25);
+}
+
+.minimal-badge-danger {
+  background-color: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+.dark .minimal-badge-danger {
+  background-color: rgba(153, 27, 27, 0.2);
+  color: #fca5a5;
+  border: 1px solid rgba(252, 165, 165, 0.25);
+}
+
+.minimal-badge-neutral {
+  background-color: #f1f5f9;
+  color: #475569;
+  border: 1px solid rgba(100, 116, 139, 0.15);
+}
+.dark .minimal-badge-neutral {
+  background-color: rgba(30, 41, 59, 0.5);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.minimal-badge-primary {
+  background-color: rgba(66, 133, 244, 0.08);
+  color: #4285F4;
+  border: 1px solid rgba(66, 133, 244, 0.2);
+}
+.dark .minimal-badge-primary {
+  background-color: rgba(66, 133, 244, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(96, 165, 250, 0.25);
+}
+
+/* Beautiful minimalist inputs */
+.minimalist-input {
+  background-color: #f1f5f9;
+  border: 1px solid transparent;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.minimalist-input:focus {
+  background-color: #ffffff;
+  border-color: #4285F4;
+  box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.12);
+}
+
+.dark .minimalist-input {
+  background-color: #0b1329;
+  border: 1px solid rgba(148, 163, 184, 0.08);
+}
+
+.dark .minimalist-input:focus {
+  background-color: #0f172a;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+/* Password container styling like design */
+.minimal-password-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: #f8fafc;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  font-family: var(--font-mono);
+}
+
+.dark .minimal-password-box {
+  background-color: #0b1329;
+  border-color: rgba(148, 163, 184, 0.08);
+}
+
+/* Smooth fade entering animations */
+.fade-up-entrance {
+  animation: fadeUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+

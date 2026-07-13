@@ -1,0 +1,6 @@
+{
+  "name": "Gmail Cloud",
+  "description": "Một nền tảng quản lý tài khoản Gmail nâng cao, bảo mật và tinh tế với giao diện tối ưu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

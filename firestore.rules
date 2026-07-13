@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Basic helper function to check if user is signed in
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Check if the user is an authorized admin based on email
+    function isAdmin() {
+      return isSignedIn() && 
+             (request.auth.token.email in [
+               'sonlyhongduc@gmail.com', 
+               'sonlyhongduc1@ghn.vn'
+             ]);
+    }
+
+    // Rules for the gmail_accounts collection used by the app
+    match /gmail_accounts/{accountId} {
+      // Admins can read, create, update, and delete accounts
+      allow read, write: if isAdmin();
+    }
+
+    // Deny all other access by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
