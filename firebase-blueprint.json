@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "GmailAccount": {
+      "title": "Gmail Account",
+      "description": "Information about a stored Gmail account",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "email": { "type": "string", "format": "email", "description": "The Gmail address" },
+        "password": { "type": "string", "description": "The account password" },
+        "status": { "type": "string", "enum": ["ACTIVE", "UNUSED", "IN_USE", "LOCKED", "SUSPENDED"], "description": "Current status of the account" },
+        "note": { "type": "string", "description": "Optional notes about the account" },
+        "lastPeerMeetAt": { "type": "string", "format": "date-time", "description": "Last Peer Meet timestamp" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["id", "email", "status", "createdAt", "updatedAt"]
+    },
+    "VaultItem": {
+      "title": "Vault Item",
+      "description": "Securely stored web credentials",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "account": { "type": "string", "description": "The username or email for the website" },
+        "password": { "type": "string", "description": "The password for the website" },
+        "webName": { "type": "string", "description": "Name of the website" },
+        "webLink": { "type": "string", "format": "uri", "description": "URL of the website" },
+        "note": { "type": "string", "description": "Optional notes" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["id", "account", "webName", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/gmail_accounts/{accountId}": {
+      "schema": "GmailAccount",
+      "description": "Collection of Gmail accounts managed by the system"
+    },
+    "/web_vault/{vaultId}": {
+      "schema": "VaultItem",
+      "description": "Secure storage for web credentials"
+    }
+  }
+}

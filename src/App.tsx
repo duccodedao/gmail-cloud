@@ -20,12 +20,15 @@ import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { StatsCards } from "./components/StatsCards";
 import { AccountTable } from "./components/AccountTable";
+import { VaultManager } from "./components/VaultManager";
+import { VaultModal } from "./components/VaultModal";
 import { AccountModal } from "./components/AccountModal";
 import { ImportModal } from "./components/ImportModal";
 import { ConfirmModal } from "./components/ConfirmModal";
 import { ToastContainer } from "./components/Toast";
-import { accountsRepo, auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged } from "./lib/firebase";
-import { GmailAccount, AccountStatus, DashboardStats, Theme, ToastMessage } from "./types";
+import { TempEmailView } from "./components/TempEmailView";
+import { accountsRepo, vaultRepo, auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged } from "./lib/firebase";
+import { GmailAccount, VaultItem, AccountStatus, DashboardStats, Theme, ToastMessage } from "./types";
 import { motion, AnimatePresence } from "motion/react";
 import { User } from "firebase/auth";
 
@@ -61,12 +64,16 @@ export default function App() {
 
   // Repository states
   const [accounts, setAccounts] = useState<GmailAccount[]>([]);
+  const [vaultItems, setVaultItems] = useState<VaultItem[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isVaultLoading, setIsVaultLoading] = useState<boolean>(true);
 
   // Modal dialog states
   const [isAccountModalOpen, setIsAccountModalOpen] = useState<boolean>(false);
+  const [isVaultModalOpen, setIsVaultModalOpen] = useState<boolean>(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
   const [editingAccount, setEditingAccount] = useState<GmailAccount | null>(null);
+  const [editingVaultItem, setEditingVaultItem] = useState<VaultItem | null>(null);
 
   // Confirm modal state
   const [confirmConfig, setConfirmConfig] = useState<{
@@ -143,36 +150,48 @@ export default function App() {
     }
     
     let unsubscribe: (() => void) | undefined;
+    let unsubscribeVault: (() => void) | undefined;
 
     const initializeApp = async () => {
       setIsLoading(true);
+      setIsVaultLoading(true);
       try {
-        console.log("App: Starting Firestore subscription...");
-        // Use real-time subscription
+        console.log("App: Starting Firestore subscriptions...");
+        
+        // Gmail Accounts subscription
         unsubscribe = accountsRepo.subscribe((data) => {
           setAccounts(data);
           setIsLoading(false);
-          // Only show success once or on manual refresh if needed
         }, (error) => {
           console.error("App: Firestore subscription error:", error);
-          addToast("Lỗi kết nối Firestore: Vui lòng kiểm tra Rules hoặc Internet", "error");
+          addToast("Lỗi kết nối Gmail Accounts", "error");
           setIsLoading(false);
         });
+
+        // Web Vault subscription
+        unsubscribeVault = vaultRepo.subscribe((items) => {
+          setVaultItems(items);
+          setIsVaultLoading(false);
+        }, (error) => {
+          console.error("App: Vault subscription error:", error);
+          addToast("Lỗi kết nối Web Vault", "error");
+          setIsVaultLoading(false);
+        });
+
       } catch (err) {
         console.error("Initialization failed", err);
         addToast("Không thể kết nối đến Cloud Firestore", "error");
         setIsLoading(false);
+        setIsVaultLoading(false);
       }
     };
 
     initializeApp();
 
-    // Cleanup subscription on unmount
+    // Cleanup subscriptions on unmount
     return () => {
-      if (unsubscribe) {
-        console.log("App: Cleaning up Firestore subscription");
-        unsubscribe();
-      }
+      if (unsubscribe) unsubscribe();
+      if (unsubscribeVault) unsubscribeVault();
     };
   }, [user]);
 
@@ -438,6 +457,48 @@ export default function App() {
     setIsAccountModalOpen(true);
   };
 
+  // Vault Handlers
+  const handleOpenAddVault = () => {
+    setEditingVaultItem(null);
+    setIsVaultModalOpen(true);
+  };
+
+  const handleOpenEditVault = (item: VaultItem) => {
+    setEditingVaultItem(item);
+    setIsVaultModalOpen(true);
+  };
+
+  const handleSaveVaultItem = async (data: Partial<VaultItem>) => {
+    try {
+      if (editingVaultItem) {
+        await vaultRepo.update(editingVaultItem.id, data);
+        addToast("Cập nhật thành công", "success");
+      } else {
+        await vaultRepo.create(data as Omit<VaultItem, "id" | "createdAt" | "updatedAt">);
+        addToast("Đã lưu vào kho lưu trữ", "success");
+      }
+    } catch (error) {
+      addToast("Lỗi khi lưu dữ liệu", "error");
+    }
+  };
+
+  const handleDeleteVaultItem = (id: string) => {
+    setConfirmConfig({
+      isOpen: true,
+      title: "Xóa tài khoản web",
+      message: "Bạn có chắc chắn muốn xóa thông tin này khỏi kho lưu trữ không?",
+      isDestructive: true,
+      onConfirm: async () => {
+        try {
+          await vaultRepo.delete(id);
+          addToast("Đã xóa khỏi kho", "info");
+        } catch (error) {
+          addToast("Không thể xóa dữ liệu", "error");
+        }
+      }
+    });
+  };
+
   // Compute stats metrics dynamically
   const stats: DashboardStats = {
     total: accounts.length,
@@ -445,20 +506,93 @@ export default function App() {
     unused: accounts.filter(a => a.status === AccountStatus.UNUSED).length,
     inUse: accounts.filter(a => a.status === AccountStatus.IN_USE).length,
     locked: accounts.filter(a => a.status === AccountStatus.LOCKED).length,
-    suspended: accounts.filter(a => a.status === AccountStatus.SUSPENDED).length
+    suspended: accounts.filter(a => a.status === AccountStatus.SUSPENDED).length,
+    peerMet: accounts.filter(a => {
+      if (!a.lastPeerMeetAt) return false;
+      const last = new Date(a.lastPeerMeetAt).getTime();
+      const now = new Date().getTime();
+      return (now - last) < 24 * 60 * 60 * 1000;
+    }).length,
+    notPeerMet: accounts.filter(a => {
+      if (!a.lastPeerMeetAt) return true;
+      const last = new Date(a.lastPeerMeetAt).getTime();
+      const now = new Date().getTime();
+      return (now - last) >= 24 * 60 * 60 * 1000;
+    }).length
   };
 
   // Filter accounts by both Search Input & Selected Status Filter Box
-  const filteredAccounts = accounts.filter(acc => {
-    const matchesSearch = 
-      acc.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (acc.password || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (acc.note || "").toLowerCase().includes(searchQuery.toLowerCase());
+  const filteredAccounts = accounts
+    .filter(acc => {
+      const matchesSearch = 
+        acc.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (acc.password || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (acc.note || "").toLowerCase().includes(searchQuery.toLowerCase());
 
-    const matchesStatus = selectedFilter ? acc.status === selectedFilter : true;
+      let matchesStatus = true;
+      if (selectedFilter) {
+        if (selectedFilter === "PEER_MET") {
+          if (!acc.lastPeerMeetAt) {
+            matchesStatus = false;
+          } else {
+            const last = new Date(acc.lastPeerMeetAt).getTime();
+            const now = new Date().getTime();
+            matchesStatus = (now - last) < 24 * 60 * 60 * 1000;
+          }
+        } else if (selectedFilter === "NOT_PEER_MET") {
+          if (!acc.lastPeerMeetAt) {
+            matchesStatus = true;
+          } else {
+            const last = new Date(acc.lastPeerMeetAt).getTime();
+            const now = new Date().getTime();
+            matchesStatus = (now - last) >= 24 * 60 * 60 * 1000;
+          }
+        } else {
+          matchesStatus = acc.status === selectedFilter;
+        }
+      }
 
-    return matchesSearch && matchesStatus;
-  });
+      return matchesSearch && matchesStatus;
+    })
+    .sort((a, b) => {
+      const now = new Date().getTime();
+      
+      const getPeerMeetTimeLeft = (acc: GmailAccount) => {
+        if (!acc.lastPeerMeetAt) return null;
+        const last = new Date(acc.lastPeerMeetAt).getTime();
+        const diff = 24 * 60 * 60 * 1000 - (now - last);
+        return diff > 0 ? diff : null;
+      };
+
+      const timeLeftA = getPeerMeetTimeLeft(a);
+      const timeLeftB = getPeerMeetTimeLeft(b);
+
+      if (timeLeftA !== null && timeLeftB !== null) {
+        return timeLeftA - timeLeftB; // smaller remaining time (almost done) first
+      }
+      if (timeLeftA !== null) return -1;
+      if (timeLeftB !== null) return 1;
+
+      // Fallback: Default sorting (createdAt DESC)
+      const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return timeB - timeA;
+    });
+
+  const handleUpdateAccount = async (id: string, updates: Partial<GmailAccount>) => {
+    const originalAccounts = [...accounts];
+    const now = new Date().toISOString();
+    setAccounts(prev => prev.map(a => a.id === id ? { ...a, ...updates, updatedAt: now } : a));
+
+    try {
+      await accountsRepo.update(id, updates);
+      addToast("Cập nhật thành công", "success");
+    } catch (error) {
+      console.error("Error updating account:", error);
+      setAccounts(originalAccounts); // Rollback on failure
+      addToast("Lỗi cập nhật", "error");
+    }
+  };
 
   if (isAuthLoading) {
     return (
@@ -555,123 +689,61 @@ export default function App() {
                   selectedFilter={selectedFilter}
                 />
 
-                {/* Dashboard Secondary Widgets and Main Table view */}
-                <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
-                  
-                  {/* Left Column: Accounts Table viewport (span 3 for more width) */}
-                  <div className="xl:col-span-3 space-y-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                          <Database className="w-5 h-5 text-blue-500" />
-                          Trung tâm dữ liệu chính
-                        </h2>
-                        <p className="text-xs text-slate-400 mt-0.5 font-medium">
-                          {selectedFilter 
-                            ? `Đang lọc theo trạng thái: ${selectedFilter}` 
-                            : "Hiển thị toàn bộ tài khoản Gmail lưu trữ trong hệ thống"
-                          }
-                        </p>
-                      </div>
-
-                      <div className="flex gap-2">
-                        {selectedFilter && (
-                          <button
-                            onClick={() => setSelectedFilter(null)}
-                            className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-600 dark:text-slate-300 transition-all cursor-pointer"
-                          >
-                            Xóa bộ lọc
-                          </button>
-                        )}
-                        <button
-                          onClick={handleOpenAdd}
-                          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/10 transition-all cursor-pointer active:scale-98"
-                          id="dash-add-btn"
-                        >
-                          <Plus className="w-4 h-4" />
-                          Thêm tài khoản
-                        </button>
-                      </div>
+                {/* Dashboard Main Table view (optimized to full width) */}
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                        <Database className="w-5 h-5 text-blue-500" />
+                        Trung tâm dữ liệu chính
+                      </h2>
+                      <p className="text-xs text-slate-400 mt-0.5 font-medium">
+                        {selectedFilter 
+                          ? `Đang lọc theo trạng thái: ${selectedFilter}` 
+                          : "Hiển thị toàn bộ tài khoản Gmail lưu trữ trong hệ thống"
+                        }
+                      </p>
                     </div>
 
-                    {/* Filter Indicator Badge Row */}
-                    {searchQuery && (
-                      <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-500/5 border border-blue-500/10 text-xs text-blue-600 dark:text-blue-400 font-semibold">
-                        <CheckCircle className="w-4 h-4" />
-                        Tìm kiếm từ khóa: "{searchQuery}" ({filteredAccounts.length} kết quả)
-                      </div>
-                    )}
-
-                    <AccountTable 
-                      accounts={filteredAccounts}
-                      isLoading={isLoading}
-                      onEdit={handleOpenEdit}
-                      onDelete={handleDeleteAccount}
-                      onDeleteMultiple={handleDeleteMultipleAccounts}
-                      addToast={addToast}
-                      onOpenAddModal={handleOpenAdd}
-                      variant="dashboard"
-                    />
-                  </div>
-
-                  {/* Right Column: Mini Widgets */}
-                  <div className="space-y-6">
-                    {/* Quick Access Actions Widget */}
-                    <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4">
-                      <h3 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider">
-                        Thao tác nhanh
-                      </h3>
-                      <div className="grid grid-cols-1 gap-2.5">
+                    <div className="flex gap-2">
+                      {selectedFilter && (
                         <button
-                          onClick={() => setIsImportModalOpen(true)}
-                          className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-blue-500/30 hover:bg-blue-50/15 text-left group transition-all cursor-pointer"
+                          onClick={() => setSelectedFilter(null)}
+                          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-600 dark:text-slate-300 transition-all cursor-pointer"
                         >
-                          <div className="flex items-center gap-3">
-                            <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                              <UploadCloud className="w-4 h-4" />
-                            </div>
-                            <div>
-                              <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">Nhập Excel</span>
-                              <span className="text-[10px] text-slate-400 font-medium">Thêm hàng loạt tài khoản</span>
-                            </div>
-                          </div>
-                          <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-blue-500 transition-transform group-hover:translate-x-1" />
+                          Xóa bộ lọc
                         </button>
-
-                        <button
-                          onClick={handleExportExcel}
-                          className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-blue-500/30 hover:bg-blue-50/15 text-left group transition-all cursor-pointer"
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                              <Download className="w-4 h-4" />
-                            </div>
-                            <div>
-                              <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">Xuất file Excel</span>
-                              <span className="text-[10px] text-slate-400 font-medium">Tải về dữ liệu sao lưu</span>
-                            </div>
-                          </div>
-                          <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-blue-500 transition-transform group-hover:translate-x-1" />
-                        </button>
-
-                        <button
-                          onClick={handleCopyRawList}
-                          className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-blue-500/30 hover:bg-blue-50/15 text-left group transition-all cursor-pointer"
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                              <ClipboardCheck className="w-4 h-4" />
-                            </div>
-                            <div>
-                              <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">Copy nhanh dạng list</span>
-                              <span className="text-[10px] text-slate-400 font-medium">Định dạng email|pass</span>
-                            </div>
-                          </div>
-                          <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-blue-500 transition-transform group-hover:translate-x-1" />
-                        </button>
-                      </div>
+                      )}
+                      <button
+                        onClick={handleOpenAdd}
+                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/10 transition-all cursor-pointer active:scale-98"
+                        id="dash-add-btn"
+                      >
+                        <Plus className="w-4 h-4" />
+                        Thêm tài khoản
+                      </button>
                     </div>
                   </div>
+
+                  {/* Filter Indicator Badge Row */}
+                  {searchQuery && (
+                    <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-500/5 border border-blue-500/10 text-xs text-blue-600 dark:text-blue-400 font-semibold">
+                      <CheckCircle className="w-4 h-4" />
+                      Tìm kiếm từ khóa: "{searchQuery}" ({filteredAccounts.length} kết quả)
+                    </div>
+                  )}
+
+                  <AccountTable 
+                    accounts={filteredAccounts}
+                    isLoading={isLoading}
+                    onEdit={handleOpenEdit}
+                    onUpdate={handleUpdateAccount}
+                    onDelete={handleDeleteAccount}
+                    onDeleteMultiple={handleDeleteMultipleAccounts}
+                    addToast={addToast}
+                    onOpenAddModal={handleOpenAdd}
+                    variant="dashboard"
+                  />
                 </div>
               </motion.div>
             )}
@@ -731,6 +803,26 @@ export default function App() {
                     >
                       Đã khóa ({stats.locked})
                     </button>
+                    <button
+                      onClick={() => setSelectedFilter("PEER_MET")}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        selectedFilter === "PEER_MET"
+                          ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/10"
+                          : "bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-800 hover:bg-slate-100"
+                      }`}
+                    >
+                      Đã Check ({stats.peerMet})
+                    </button>
+                    <button
+                      onClick={() => setSelectedFilter("NOT_PEER_MET")}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        selectedFilter === "NOT_PEER_MET"
+                          ? "bg-purple-600 text-white shadow-md shadow-purple-500/10"
+                          : "bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-800 hover:bg-slate-100"
+                      }`}
+                    >
+                      Chưa Check ({stats.notPeerMet})
+                    </button>
                   </div>
 
                   {/* Core triggers list */}
@@ -772,6 +864,7 @@ export default function App() {
                   accounts={filteredAccounts}
                   isLoading={isLoading}
                   onEdit={handleOpenEdit}
+                  onUpdate={handleUpdateAccount}
                   onDelete={handleDeleteAccount}
                   onDeleteMultiple={handleDeleteMultipleAccounts}
                   addToast={addToast}
@@ -781,7 +874,43 @@ export default function App() {
               </motion.div>
             )}
 
-            {/* TAB 3: IMPORT & EXPORT DOCK */}
+            {/* TAB: TEMP EMAIL GENERATOR & INBOX */}
+            {activeTab === "temp-email" && (
+              <motion.div
+                key="temp-email-view"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.25 }}
+              >
+                <TempEmailView 
+                  addToast={addToast} 
+                  onAddAccount={handleSaveAccount} 
+                  existingEmails={accounts.map(a => a.email)}
+                />
+              </motion.div>
+            )}
+
+            {/* TAB 3: VAULT VIEW */}
+            {activeTab === "vault" && (
+              <motion.div
+                key="vault-view"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                className="space-y-6"
+              >
+                <VaultManager 
+                  items={vaultItems}
+                  onAdd={handleOpenAddVault}
+                  onEdit={handleOpenEditVault}
+                  onDelete={handleDeleteVaultItem}
+                  addToast={addToast}
+                />
+              </motion.div>
+            )}
+
+            {/* TAB 4: IMPORT & EXPORT DOCK */}
             {activeTab === "sync" && (
               <motion.div
                 key="sync-view"
@@ -961,6 +1090,13 @@ export default function App() {
         existingEmails={accounts.map(a => a.email)}
       />
 
+      <VaultModal
+        isOpen={isVaultModalOpen}
+        onClose={() => setIsVaultModalOpen(false)}
+        onSave={handleSaveVaultItem}
+        initialData={editingVaultItem}
+      />
+
       <ImportModal 
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
@@ -980,7 +1116,6 @@ export default function App() {
 
       {/* Custom Toast Alert Center */}
       <ToastContainer toasts={toasts} onClose={removeToast} />
-
     </div>
   );
 }

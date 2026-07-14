@@ -11,7 +11,10 @@ import {
   ArrowLeftRight,
   Wifi,
   WifiOff,
-  LogOut
+  LogOut,
+  Ticket,
+  Copy,
+  Check
 } from "lucide-react";
 import { Theme } from "../types";
 
@@ -36,9 +39,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   totalAccounts,
   onLogout
 }) => {
+  const [promoCopied, setPromoCopied] = React.useState(false);
+
   const menuItems = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "accounts", label: "Danh sách Email", icon: Mail },
+    { id: "temp-email", label: "Gmail Tạm Thời", icon: Sparkles },
     { id: "sync", label: "Nhập & Xuất", icon: ArrowLeftRight },
     { id: "settings", label: "Cài đặt hệ thống", icon: Settings }
   ];
@@ -46,6 +52,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const handleNav = (tabId: string) => {
     setActiveTab(tabId);
     setSidebarOpen(false); // Close on mobile navigation
+  };
+
+  const handleCopyPromo = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText("SVNSFRHG");
+    setPromoCopied(true);
+    setTimeout(() => setPromoCopied(false), 2000);
   };
 
   return (
@@ -120,6 +133,32 @@ export const Sidebar: React.FC<SidebarProps> = ({
             );
           })}
         </nav>
+
+        {/* Promo Code Card */}
+        <div className="px-5 py-4 mx-4 mb-3.5 rounded-2xl bg-blue-500/5 dark:bg-blue-500/10 border border-blue-500/10 dark:border-blue-500/25 flex flex-col gap-2.5">
+          <div className="flex items-center gap-2">
+            <Ticket className="w-4.5 h-4.5 text-blue-500 dark:text-blue-400" />
+            <span className="text-xs font-bold text-slate-800 dark:text-slate-200">Mã Khuyến Mại</span>
+          </div>
+          <div className="flex items-center justify-between gap-2 p-2 bg-white dark:bg-slate-950 rounded-xl border border-blue-500/15 dark:border-blue-500/10">
+            <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-200 select-all tracking-wider pl-1">SVNSFRHG</span>
+            <button
+              onClick={handleCopyPromo}
+              className={`p-1.5 rounded-lg transition-all duration-200 cursor-pointer shrink-0 ${
+                promoCopied 
+                  ? 'bg-emerald-500 text-white shadow-sm' 
+                  : 'text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50/50 dark:hover:bg-blue-950/40'
+              }`}
+              title="Sao chép mã"
+            >
+              {promoCopied ? (
+                <Check className="w-3.5 h-3.5" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
+            </button>
+          </div>
+        </div>
 
         {/* Cloud Database Storage Monitor (Unlimited real storage) */}
         <div className="px-6 py-4 mx-4 mb-4 rounded-2xl bg-gradient-to-br from-blue-500/5 to-emerald-500/5 dark:from-blue-400/5 dark:to-emerald-400/5 border border-blue-500/10 dark:border-emerald-500/20">

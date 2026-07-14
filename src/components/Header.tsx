@@ -31,6 +31,8 @@ export const Header: React.FC<HeaderProps> = ({
         return "Dashboard";
       case "accounts":
         return "Danh sách Email";
+      case "temp-email":
+        return "Gmail Tạm Thời";
       case "sync":
         return "Nhập & Xuất";
       case "settings":

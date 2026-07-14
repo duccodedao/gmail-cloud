@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   Copy, 
   Check, 
@@ -18,15 +18,20 @@ import {
   Plus,
   Clock,
   CheckSquare,
-  Square
+  Square,
+  QrCode,
+  Users,
+  CheckCircle
 } from "lucide-react";
 import { GmailAccount, AccountStatus } from "../types";
 import { motion, AnimatePresence } from "motion/react";
+import { QRCodeModal } from "./QRCodeModal";
 
 interface AccountTableProps {
   accounts: GmailAccount[];
   isLoading: boolean;
   onEdit: (account: GmailAccount) => void;
+  onUpdate?: (id: string, updates: Partial<GmailAccount>) => void;
   onDelete: (id: string) => void;
   onDeleteMultiple: (ids: string[]) => void;
   addToast: (message: string, type: "success" | "error" | "info" | "warning") => void;
@@ -34,10 +39,79 @@ interface AccountTableProps {
   variant?: 'dashboard' | 'list';
 }
 
+const PeerMeetCell: React.FC<{ 
+  account: GmailAccount; 
+  onUpdate?: (id: string, updates: Partial<GmailAccount>) => void;
+}> = ({ account, onUpdate }) => {
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+
+  useEffect(() => {
+    const calculateTimeLeft = () => {
+      if (!account.lastPeerMeetAt) return null;
+      const last = new Date(account.lastPeerMeetAt).getTime();
+      const now = new Date().getTime();
+      const diff = 24 * 60 * 60 * 1000 - (now - last);
+      return diff > 0 ? diff : null;
+    };
+
+    setTimeLeft(calculateTimeLeft());
+
+    const timer = setInterval(() => {
+      const remaining = calculateTimeLeft();
+      setTimeLeft(remaining);
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [account.lastPeerMeetAt]);
+
+  const handleStart = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const nowStr = new Date().toISOString();
+    
+    // Set local state immediately for instant feedback
+    const last = new Date(nowStr).getTime();
+    const now = new Date().getTime();
+    const diff = 24 * 60 * 60 * 1000 - (now - last);
+    setTimeLeft(diff > 0 ? diff : null);
+
+    if (onUpdate) {
+      onUpdate(account.id, { lastPeerMeetAt: nowStr });
+    }
+  };
+
+  const formatTime = (ms: number) => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
+
+  if (timeLeft !== null) {
+    return (
+      <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 font-mono text-xs font-bold bg-indigo-50 dark:bg-indigo-900/20 px-3 py-1.5 rounded-xl border border-indigo-100 dark:border-indigo-800/30 w-fit">
+        <Clock className="w-3.5 h-3.5 animate-pulse" />
+        {formatTime(timeLeft)}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={handleStart}
+      className="flex items-center gap-2 px-4 py-1.5 rounded-xl text-[11px] font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition-all cursor-pointer active:scale-95 w-fit"
+    >
+      <Users className="w-3.5 h-3.5" />
+      Check
+    </button>
+  );
+};
+
 export const AccountTable: React.FC<AccountTableProps> = ({
   accounts,
   isLoading,
   onEdit,
+  onUpdate,
   onDelete,
   onDeleteMultiple,
   addToast,
@@ -50,6 +124,15 @@ export const AccountTable: React.FC<AccountTableProps> = ({
 
   // Selection State
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  // QR Code State
+  const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [selectedEmailForQr, setSelectedEmailForQr] = useState("");
+
+  const handleOpenQr = (email: string) => {
+    setSelectedEmailForQr(email);
+    setQrModalOpen(true);
+  };
   const isAllSelected = accounts.length > 0 && selectedIds.length === accounts.length;
 
   const toggleSelectAll = () => {
@@ -144,9 +227,31 @@ export const AccountTable: React.FC<AccountTableProps> = ({
   const shortenEmail = (email: string) => {
     const parts = email.split('@');
     if (parts.length !== 2) return email;
-    const [name, domain] = parts;
-    if (name.length <= 8) return email;
-    return `${name.substring(0, 4)}...${name.slice(-2)}@${domain}`;
+    const [name] = parts;
+    
+    // Truncate name if too long
+    const shortName = name.length > 10 ? `${name.substring(0, 7)}...` : name;
+    
+    return `${shortName}@***`;
+  };
+
+  const getEmailColorClass = (account: GmailAccount) => {
+    if (account.status === "UNUSED") {
+      return "text-amber-500 dark:text-amber-400 font-semibold";
+    }
+    
+    const isChecked = (() => {
+      if (!account.lastPeerMeetAt) return false;
+      const last = new Date(account.lastPeerMeetAt).getTime();
+      const now = new Date().getTime();
+      return (now - last) < 24 * 60 * 60 * 1000;
+    })();
+
+    if (isChecked) {
+      return "text-rose-600 dark:text-rose-400 font-semibold";
+    } else {
+      return "text-emerald-600 dark:text-emerald-400 font-semibold";
+    }
   };
 
   // Pagination bounds
@@ -280,6 +385,8 @@ export const AccountTable: React.FC<AccountTableProps> = ({
                 <th className="px-6 py-4.5">Địa chỉ Email</th>
                 <th className="px-6 py-4.5 w-72">Mật khẩu</th>
                 <th className="px-6 py-4.5 w-44">Trạng thái</th>
+                <th className="px-6 py-4.5 w-44">Peer meet</th>
+                <th className="px-6 py-4.5 w-44">Check gần nhất</th>
                 <th className="px-6 py-4.5">Ghi chú</th>
                 {variant === 'list' && <th className="px-6 py-4.5 w-40">Ngày thêm</th>}
                 <th className="px-6 py-4.5 w-44 text-right">Thao tác</th>
@@ -329,7 +436,7 @@ export const AccountTable: React.FC<AccountTableProps> = ({
                       <td className="px-6 py-5">
                         <div className="flex items-center justify-between gap-2 max-w-[280px]">
                           <span 
-                            className="text-sm font-medium text-slate-800 dark:text-slate-200 select-all"
+                            className={`text-sm select-all ${getEmailColorClass(account)}`}
                             title={account.email}
                           >
                             {shortenEmail(account.email)}
@@ -387,6 +494,30 @@ export const AccountTable: React.FC<AccountTableProps> = ({
                         {renderStatusBadge(account.status)}
                       </td>
 
+                      {/* Peer Meet Column */}
+                      <td className="px-6 py-5">
+                        <PeerMeetCell account={account} onUpdate={onUpdate} />
+                      </td>
+
+                      {/* Check gần nhất Column */}
+                      <td className="px-6 py-5">
+                        {account.lastPeerMeetAt ? (
+                          <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+                            <Clock className="w-3.5 h-3.5 text-blue-500" />
+                            <div className="flex flex-col">
+                              <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                                {new Date(account.lastPeerMeetAt).toLocaleDateString('vi-VN')}
+                              </span>
+                              <span className="text-[10px] opacity-70 font-medium">
+                                {new Date(account.lastPeerMeetAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-slate-400 font-medium">—</span>
+                        )}
+                      </td>
+
                       {/* Notes Column */}
                       <td className="px-6 py-5">
                         <p className="text-xs text-slate-500 dark:text-slate-400 max-w-[220px] truncate font-medium" title={account.note}>
@@ -426,6 +557,16 @@ export const AccountTable: React.FC<AccountTableProps> = ({
                             title="Sao chép toàn bộ"
                           >
                             <ClipboardCopy className="w-4 h-4" />
+                          </button>
+
+                          {/* QR Code button */}
+                          <button
+                            onClick={() => handleOpenQr(account.email)}
+                            className="p-1.5 rounded-xl border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:border-blue-500/30 hover:bg-blue-50/20 transition-all cursor-pointer bg-white dark:bg-slate-900 shadow-sm"
+                            title="Tạo mã QR"
+                            id={`qr-btn-${account.id}`}
+                          >
+                            <QrCode className="w-4 h-4" />
                           </button>
 
                           {/* Edit button */}
@@ -503,6 +644,13 @@ export const AccountTable: React.FC<AccountTableProps> = ({
                   </div>
                   <div className="flex gap-1">
                     <button
+                      onClick={() => handleOpenQr(account.email)}
+                      className="p-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-400 hover:text-blue-500 transition-colors shadow-sm"
+                      title="Tạo mã QR"
+                    >
+                      <QrCode className="w-4 h-4" />
+                    </button>
+                    <button
                       onClick={() => onEdit(account)}
                       className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-blue-500 cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
                       id={`mobile-edit-btn-${account.id}`}
@@ -524,7 +672,7 @@ export const AccountTable: React.FC<AccountTableProps> = ({
                   <span className="text-[10px] uppercase font-semibold tracking-wider text-slate-400">Địa chỉ Email</span>
                   <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-850">
                     <span 
-                      className="text-sm font-medium text-slate-800 dark:text-slate-200 select-all"
+                      className={`text-sm select-all ${getEmailColorClass(account)}`}
                       title={account.email}
                     >
                       {shortenEmail(account.email)}
@@ -581,6 +729,22 @@ export const AccountTable: React.FC<AccountTableProps> = ({
                     {account.note}
                   </div>
                 )}
+
+                {/* Peer Meet check */}
+                <div className="flex flex-col gap-2.5 p-3.5 bg-indigo-50/20 dark:bg-indigo-950/10 rounded-xl border border-indigo-100/50 dark:border-indigo-900/30">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">Peer meet:</span>
+                    <PeerMeetCell account={account} onUpdate={onUpdate} />
+                  </div>
+                  {account.lastPeerMeetAt && (
+                    <div className="flex items-center justify-between border-t border-indigo-100/20 dark:border-indigo-900/20 pt-2 text-[11px] text-slate-500 dark:text-slate-400">
+                      <span className="font-semibold text-slate-400 uppercase tracking-wider text-[9px]">Check gần nhất:</span>
+                      <span className="font-mono font-bold">
+                        {new Date(account.lastPeerMeetAt).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'medium' })}
+                      </span>
+                    </div>
+                  )}
+                </div>
 
                 {/* Combined Copy Profile */}
                 <button
@@ -691,6 +855,12 @@ export const AccountTable: React.FC<AccountTableProps> = ({
           </motion.div>
         )}
       </AnimatePresence>
+
+      <QRCodeModal 
+        isOpen={qrModalOpen} 
+        email={selectedEmailForQr} 
+        onClose={() => setQrModalOpen(false)} 
+      />
     </div>
   );
 };

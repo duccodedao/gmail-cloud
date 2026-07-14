@@ -14,7 +14,7 @@ import {
   onSnapshot,
   enableIndexedDbPersistence
 } from "firebase/firestore";
-import { GmailAccount } from "../types";
+import { GmailAccount, VaultItem } from "../types";
 
 // User's provided Firebase configuration
 const firebaseConfig = {
@@ -50,6 +50,53 @@ export { signInWithPopup, signOut, onAuthStateChanged };
 
 const COLLECTION_NAME = "gmail_accounts";
 
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 // Master Accounts Repository API that handles Firestore operations
 export const accountsRepo = {
   /**
@@ -68,7 +115,7 @@ export const accountsRepo = {
       })) as GmailAccount[];
       callback(accounts);
     }, (error) => {
-      console.error("Firestore subscription error:", error);
+      handleFirestoreError(error, OperationType.GET, COLLECTION_NAME);
       if (onError) onError(error);
     });
   },
@@ -77,15 +124,20 @@ export const accountsRepo = {
    * Fetch all accounts (Manual)
    */
   async getAll(): Promise<GmailAccount[]> {
-    console.log("Firestore: Fetching all accounts manually...");
-    const colRef = collection(db, COLLECTION_NAME);
-    const q = query(colRef, orderBy("updatedAt", "desc"));
-    const snapshot = await getDocs(q);
-    console.log(`Firestore: Manual fetch returned ${snapshot.docs.length} documents`);
-    return snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    })) as GmailAccount[];
+    try {
+      console.log("Firestore: Fetching all accounts manually...");
+      const colRef = collection(db, COLLECTION_NAME);
+      const q = query(colRef, orderBy("updatedAt", "desc"));
+      const snapshot = await getDocs(q);
+      console.log(`Firestore: Manual fetch returned ${snapshot.docs.length} documents`);
+      return snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as GmailAccount[];
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, COLLECTION_NAME);
+      return [];
+    }
   },
 
   /**
@@ -97,15 +149,19 @@ export const accountsRepo = {
     console.log(`Firestore: Creating new account ${account.email} (ID: ${id})`);
     
     const docRef = doc(db, COLLECTION_NAME, id);
-    await setDoc(docRef, {
-      ...account,
-      id,
-      createdAt: now,
-      updatedAt: now
-    });
-    console.log(`Firestore: Successfully created ${account.email}`);
-
-    return id;
+    try {
+      await setDoc(docRef, {
+        ...account,
+        id,
+        createdAt: now,
+        updatedAt: now
+      });
+      console.log(`Firestore: Successfully created ${account.email}`);
+      return id;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, COLLECTION_NAME);
+      return "";
+    }
   },
 
   /**
@@ -115,11 +171,15 @@ export const accountsRepo = {
     const now = new Date().toISOString();
     console.log(`Firestore: Updating account ID: ${id}`);
     const docRef = doc(db, COLLECTION_NAME, id);
-    await updateDoc(docRef, {
-      ...updates,
-      updatedAt: now
-    });
-    console.log(`Firestore: Successfully updated account ID: ${id}`);
+    try {
+      await updateDoc(docRef, {
+        ...updates,
+        updatedAt: now
+      });
+      console.log(`Firestore: Successfully updated account ID: ${id}`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, COLLECTION_NAME);
+    }
   },
 
   /**
@@ -128,8 +188,12 @@ export const accountsRepo = {
   async delete(id: string): Promise<void> {
     console.log(`Firestore: Deleting account ID: ${id}`);
     const docRef = doc(db, COLLECTION_NAME, id);
-    await deleteDoc(docRef);
-    console.log(`Firestore: Successfully deleted account ID: ${id}`);
+    try {
+      await deleteDoc(docRef);
+      console.log(`Firestore: Successfully deleted account ID: ${id}`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, COLLECTION_NAME);
+    }
   },
 
   /**
@@ -146,8 +210,7 @@ export const accountsRepo = {
       await batch.commit();
       console.log(`Firestore: Successfully batch deleted ${ids.length} accounts`);
     } catch (error) {
-      console.error("Firestore batch delete error:", error);
-      throw error;
+      handleFirestoreError(error, OperationType.DELETE, COLLECTION_NAME);
     }
   },
 
@@ -169,7 +232,60 @@ export const accountsRepo = {
         updatedAt: now
       });
     }
-    await batch.commit();
-    console.log(`Firestore: Successfully committed batch import of ${accounts.length} accounts`);
+    try {
+      await batch.commit();
+      console.log(`Firestore: Successfully committed batch import of ${accounts.length} accounts`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, COLLECTION_NAME);
+    }
   }
 };
+
+const VAULT_COLLECTION = "web_vault";
+
+export const vaultRepo = {
+  subscribe(callback: (items: VaultItem[]) => void, onError?: (error: any) => void) {
+    const colRef = collection(db, VAULT_COLLECTION);
+    const q = query(colRef, orderBy("updatedAt", "desc"));
+    return onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as VaultItem[];
+      callback(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, VAULT_COLLECTION);
+      if (onError) onError(error);
+    });
+  },
+
+  async create(item: Omit<VaultItem, "id" | "createdAt" | "updatedAt">): Promise<string> {
+    const id = "vault_" + Math.random().toString(36).substring(2, 11);
+    const now = new Date().toISOString();
+    const docRef = doc(db, VAULT_COLLECTION, id);
+    try {
+      await setDoc(docRef, { ...item, id, createdAt: now, updatedAt: now });
+      return id;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, VAULT_COLLECTION);
+      return "";
+    }
+  },
+
+  async update(id: string, updates: Partial<Omit<VaultItem, "id" | "createdAt">>): Promise<void> {
+    const now = new Date().toISOString();
+    const docRef = doc(db, VAULT_COLLECTION, id);
+    try {
+      await updateDoc(docRef, { ...updates, updatedAt: now });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, VAULT_COLLECTION);
+    }
+  },
+
+  async delete(id: string): Promise<void> {
+    const docRef = doc(db, VAULT_COLLECTION, id);
+    try {
+      await deleteDoc(docRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, VAULT_COLLECTION);
+    }
+  }
+};
+

@@ -127,8 +127,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
         if (!email && !password) continue;
 
-        let finalStatus = AccountStatus.ACTIVE;
-        if (rawStatus.includes("UNUSED") || rawStatus.includes("CHƯA")) {
+        let finalStatus = AccountStatus.UNUSED;
+        if (rawStatus.includes("ACTIVE") || rawStatus.includes("HOẠT") || rawStatus.includes("ĐỘNG")) {
+          finalStatus = AccountStatus.ACTIVE;
+        } else if (rawStatus.includes("UNUSED") || rawStatus.includes("CHƯA")) {
           finalStatus = AccountStatus.UNUSED;
         } else if (rawStatus.includes("IN_USE") || rawStatus.includes("ĐANG")) {
           finalStatus = AccountStatus.IN_USE;

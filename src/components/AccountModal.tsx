@@ -22,7 +22,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 }) => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [status, setStatus] = useState<AccountStatus>(AccountStatus.ACTIVE);
+  const [status, setStatus] = useState<AccountStatus>(AccountStatus.UNUSED);
   const [note, setNote] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -40,7 +40,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
       // Clear inputs for Add Mode
       setEmail("");
       setPassword("Slhd1133#");
-      setStatus(AccountStatus.ACTIVE);
+      setStatus(AccountStatus.UNUSED);
       setNote("");
     }
     // Clear errors
