@@ -61,7 +61,13 @@ export async function getAvailableDomains(): Promise<string[]> {
     return data.domains.map((d: any) => d.qdn);
   } catch (error) {
     console.error("inboxes.com domains failed", error);
-    return ["getnada.com", "dropjar.com", "inboxbear.com"];
+    return [
+      "blondmail.com", "chapsmail.com", "clowmail.com", "dropjar.com", 
+      "fivermail.com", "getairmail.com", "getmule.com", "getnada.com", 
+      "gimpmail.com", "givmail.com", "guysmail.com", "inboxbear.com", 
+      "replyloop.com", "robot-mail.com", "tafmail.com", "temptami.com", 
+      "tupmail.com", "vomoto.com", "web-library.net"
+    ];
   }
 }
 
@@ -105,7 +111,11 @@ export async function fetchMessages(info: GeneratedEmailInfo): Promise<TempEmail
     const read = getLocalSet(LOCAL_STORAGE_READ);
 
     const response = await fetch(`${API_BASE}/inbox/${encodeURIComponent(info.email)}`);
-    if (!response.ok) throw new Error("Failed to fetch messages");
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error("Inbox fetch failed", response.status, errorData);
+      throw new Error(errorData.error || `Failed to fetch messages: ${response.status}`);
+    }
     const data = await response.json();
     
     const list = Array.isArray(data.msgs) ? data.msgs : [];
@@ -141,7 +151,7 @@ export async function fetchMessageDetails(info: GeneratedEmailInfo, id: string, 
     addToLocalSet(LOCAL_STORAGE_READ, id);
   }
 
-  const response = await fetch(`${API_BASE}/message/${id}`);
+  const response = await fetch(`${API_BASE}/message/${id}?email=${encodeURIComponent(info.email)}`);
   if (!response.ok) throw new Error("Failed to fetch message details");
   const msg = await response.json();
 
