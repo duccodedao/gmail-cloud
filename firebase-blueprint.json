@@ -31,6 +31,36 @@
         "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
       },
       "required": ["id", "account", "webName", "createdAt", "updatedAt"]
+    },
+    "AllowedUser": {
+      "title": "Allowed User",
+      "description": "User authorized to access the system with specific permissions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier (the email address)" },
+        "email": { "type": "string", "format": "email", "description": "The user's Google Gmail address" },
+        "name": { "type": "string", "description": "The name of the user" },
+        "role": { "type": "string", "enum": ["admin", "user"], "description": "Access level of the user" },
+        "note": { "type": "string", "description": "Optional notes" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["id", "email", "role", "createdAt", "updatedAt"]
+    },
+    "ErrorLog": {
+      "title": "Error Log",
+      "description": "System error or application failure log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "message": { "type": "string", "description": "The error message" },
+        "stack": { "type": "string", "description": "Error stack trace if available" },
+        "source": { "type": "string", "description": "Where the error occurred (e.g., 'server', 'client')" },
+        "context": { "type": "object", "description": "Additional metadata about the error" },
+        "userEmail": { "type": "string", "description": "Email of the user who encountered the error" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp when the error occurred" }
+      },
+      "required": ["id", "message", "source", "createdAt"]
     }
   },
   "firestore": {
@@ -41,6 +71,14 @@
     "/web_vault/{vaultId}": {
       "schema": "VaultItem",
       "description": "Secure storage for web credentials"
+    },
+    "/allowed_users/{userId}": {
+      "schema": "AllowedUser",
+      "description": "List of authorized users allowed to access the system"
+    },
+    "/error_logs/{logId}": {
+      "schema": "ErrorLog",
+      "description": "Centralized error logging collection"
     }
   }
 }

@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
 import { 
   getFirestore, 
   collection, 
@@ -10,11 +10,12 @@ import {
   updateDoc,
   writeBatch,
   query,
+  where,
   orderBy,
   onSnapshot,
   enableIndexedDbPersistence
 } from "firebase/firestore";
-import { GmailAccount, VaultItem } from "../types";
+import { GmailAccount, VaultItem, AllowedUser } from "../types";
 
 // User's provided Firebase configuration
 const firebaseConfig = {
@@ -46,7 +47,7 @@ export { db };
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
-export { signInWithPopup, signOut, onAuthStateChanged };
+export { signInWithPopup, signOut, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword };
 
 const COLLECTION_NAME = "gmail_accounts";
 
@@ -76,6 +77,39 @@ interface FirestoreErrorInfo {
   }
 }
 
+/**
+ * Centrally log an error to Firestore and console.
+ * Defined here to avoid circular dependency with logger.ts
+ */
+export async function logError(
+  error: any, 
+  source: string = "client", 
+  context: any = {}
+) {
+  const message = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? error.stack : undefined;
+  const userEmail = auth.currentUser?.email || undefined;
+
+  console.error(`[${source.toUpperCase()}] Error:`, message, context);
+
+  try {
+    const id = "err_" + Math.random().toString(36).substring(2, 11);
+    const now = new Date().toISOString();
+    const docRef = doc(db, "error_logs", id);
+    await setDoc(docRef, { 
+      message, 
+      source, 
+      stack, 
+      context, 
+      userEmail,
+      id, 
+      createdAt: now 
+    });
+  } catch (e) {
+    console.error("Critical: Failed to log error to Firestore", e);
+  }
+}
+
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
@@ -93,6 +127,10 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   }
+  
+  // Log to centralized error logs
+  logError(error, "firestore", { operationType, path, authInfo: errInfo.authInfo });
+
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
@@ -186,12 +224,13 @@ export const accountsRepo = {
    * Delete an account
    */
   async delete(id: string): Promise<void> {
-    console.log(`Firestore: Deleting account ID: ${id}`);
+    console.log(`Firestore: Attempting to delete account ID: ${id}`);
     const docRef = doc(db, COLLECTION_NAME, id);
     try {
       await deleteDoc(docRef);
       console.log(`Firestore: Successfully deleted account ID: ${id}`);
     } catch (error) {
+      console.error(`Firestore: Error deleting account ID: ${id}`, error);
       handleFirestoreError(error, OperationType.DELETE, COLLECTION_NAME);
     }
   },
@@ -285,6 +324,281 @@ export const vaultRepo = {
       await deleteDoc(docRef);
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, VAULT_COLLECTION);
+    }
+  }
+};
+
+const ALLOWED_USERS_COLLECTION = "allowed_users";
+
+export const allowedUsersRepo = {
+  subscribe(callback: (items: AllowedUser[]) => void, onError?: (error: any) => void) {
+    const colRef = collection(db, ALLOWED_USERS_COLLECTION);
+    const q = query(colRef, orderBy("updatedAt", "desc"));
+    return onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as AllowedUser[];
+      callback(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, ALLOWED_USERS_COLLECTION);
+      if (onError) onError(error);
+    });
+  },
+
+  subscribeOne(email: string, callback: (user: AllowedUser | null) => void, onError?: (error: any) => void) {
+    const id = email.trim().toLowerCase();
+    const docRef = doc(db, ALLOWED_USERS_COLLECTION, id);
+    return onSnapshot(docRef, (snapshot) => {
+      if (snapshot.exists()) {
+        callback({ id: snapshot.id, ...snapshot.data() } as AllowedUser);
+      } else {
+        callback(null);
+      }
+    }, (error) => {
+      if (onError) onError(error);
+    });
+  },
+
+  async getAll(): Promise<AllowedUser[]> {
+    try {
+      const colRef = collection(db, ALLOWED_USERS_COLLECTION);
+      const q = query(colRef, orderBy("updatedAt", "desc"));
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as AllowedUser[];
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, ALLOWED_USERS_COLLECTION);
+      return [];
+    }
+  },
+
+  async create(item: Omit<AllowedUser, "createdAt" | "updatedAt">): Promise<string> {
+    const id = item.email.trim().toLowerCase();
+    const now = new Date().toISOString();
+    const docRef = doc(db, ALLOWED_USERS_COLLECTION, id);
+    try {
+      await setDoc(docRef, {
+        ...item,
+        id,
+        email: item.email.trim().toLowerCase(),
+        createdAt: now,
+        updatedAt: now
+      });
+      return id;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, ALLOWED_USERS_COLLECTION);
+      return "";
+    }
+  },
+
+  async update(id: string, updates: Partial<Omit<AllowedUser, "id" | "createdAt">>): Promise<void> {
+    const now = new Date().toISOString();
+    const docRef = doc(db, ALLOWED_USERS_COLLECTION, id);
+    const sanitizedUpdates = { ...updates, updatedAt: now };
+    if (updates.email) {
+      sanitizedUpdates.email = updates.email.trim().toLowerCase();
+    }
+    try {
+      await updateDoc(docRef, sanitizedUpdates);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, ALLOWED_USERS_COLLECTION);
+    }
+  },
+
+  async delete(id: string): Promise<void> {
+    console.log(`Firestore: Attempting to delete allowed user ID: ${id}`);
+    const docRef = doc(db, ALLOWED_USERS_COLLECTION, id);
+    try {
+      await deleteDoc(docRef);
+      console.log(`Firestore: Successfully deleted allowed user ID: ${id}`);
+    } catch (error) {
+      console.error(`Firestore: Error deleting allowed user ID: ${id}`, error);
+      handleFirestoreError(error, OperationType.DELETE, ALLOWED_USERS_COLLECTION);
+    }
+  }
+};
+
+const DOMAIN_STATUS_COLLECTION = "domain_status";
+export const domainStatusRepo = {
+  subscribe(callback: (items: any[]) => void, onError?: (error: any) => void) {
+    const colRef = collection(db, DOMAIN_STATUS_COLLECTION);
+    return onSnapshot(colRef, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      callback(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, DOMAIN_STATUS_COLLECTION);
+      if (onError) onError(error);
+    });
+  },
+  async getAll(): Promise<any[]> {
+    try {
+      const colRef = collection(db, DOMAIN_STATUS_COLLECTION);
+      const snapshot = await getDocs(colRef);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, DOMAIN_STATUS_COLLECTION);
+      return [];
+    }
+  },
+  async setStatus(domain: string, isWorking: boolean): Promise<void> {
+    const id = domain.replace(/\./g, "_");
+    const now = new Date().toISOString();
+    const docRef = doc(db, DOMAIN_STATUS_COLLECTION, id);
+    try {
+      await setDoc(docRef, { id, domain, isWorking, updatedAt: now }, { merge: true });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, DOMAIN_STATUS_COLLECTION);
+    }
+  }
+};
+
+const DOMAIN_REPORTS_COLLECTION = "domain_reports";
+export const domainReportsRepo = {
+  subscribe(callback: (items: any[]) => void, onError?: (error: any) => void) {
+    const colRef = collection(db, DOMAIN_REPORTS_COLLECTION);
+    const q = query(colRef, orderBy("createdAt", "desc"));
+    return onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      callback(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, DOMAIN_REPORTS_COLLECTION);
+      if (onError) onError(error);
+    });
+  },
+  async create(report: Omit<any, "id" | "createdAt">): Promise<string> {
+    const id = "rep_" + Math.random().toString(36).substring(2, 11);
+    const now = new Date().toISOString();
+    const docRef = doc(db, DOMAIN_REPORTS_COLLECTION, id);
+    try {
+      await setDoc(docRef, { ...report, id, createdAt: now });
+      return id;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, DOMAIN_REPORTS_COLLECTION);
+      return "";
+    }
+  },
+  async hasReport(domain: string): Promise<boolean> {
+    try {
+      const colRef = collection(db, DOMAIN_REPORTS_COLLECTION);
+      const q = query(colRef, where("domain", "==", domain));
+      const snapshot = await getDocs(q);
+      return !snapshot.empty;
+    } catch (error) {
+      console.error("Error checking report", error);
+      return false;
+    }
+  },
+  async delete(id: string): Promise<void> {
+    const docRef = doc(db, DOMAIN_REPORTS_COLLECTION, id);
+    try {
+      await deleteDoc(docRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, DOMAIN_REPORTS_COLLECTION);
+    }
+  }
+};
+
+const TEMP_EMAILS_LOG_COLLECTION = "temp_emails_log";
+export const tempEmailsLogRepo = {
+  subscribe(callback: (items: any[]) => void, onError?: (error: any) => void) {
+    const colRef = collection(db, TEMP_EMAILS_LOG_COLLECTION);
+    const q = query(colRef, orderBy("createdAt", "desc"));
+    return onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      callback(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, TEMP_EMAILS_LOG_COLLECTION);
+      if (onError) onError(error);
+    });
+  },
+  async create(log: Omit<any, "id" | "createdAt">): Promise<string> {
+    const id = "log_" + Math.random().toString(36).substring(2, 11);
+    const now = new Date().toISOString();
+    const docRef = doc(db, TEMP_EMAILS_LOG_COLLECTION, id);
+    try {
+      await setDoc(docRef, { ...log, id, createdAt: now });
+      return id;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, TEMP_EMAILS_LOG_COLLECTION);
+      return "";
+    }
+  },
+  async delete(id: string): Promise<void> {
+    const docRef = doc(db, TEMP_EMAILS_LOG_COLLECTION, id);
+    try {
+      await deleteDoc(docRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, TEMP_EMAILS_LOG_COLLECTION);
+    }
+  }
+};
+
+const TEST_HISTORY_COLLECTION = "test_history";
+export const testHistoryRepo = {
+  subscribe(callback: (items: any[]) => void, onError?: (error: any) => void) {
+    const colRef = collection(db, TEST_HISTORY_COLLECTION);
+    const q = query(colRef, orderBy("testedAt", "desc"));
+    return onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      callback(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, TEST_HISTORY_COLLECTION);
+      if (onError) onError(error);
+    });
+  },
+  async create(history: Omit<any, "id" | "testedAt">): Promise<string> {
+    const id = "test_" + Math.random().toString(36).substring(2, 11);
+    const now = new Date().toISOString();
+    const docRef = doc(db, TEST_HISTORY_COLLECTION, id);
+    try {
+      await setDoc(docRef, { ...history, id, testedAt: now });
+      return id;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, TEST_HISTORY_COLLECTION);
+      return "";
+    }
+  }
+};
+
+const ERROR_LOGS_COLLECTION = "error_logs";
+export const errorLogsRepo = {
+  subscribe(callback: (items: any[]) => void, onError?: (error: any) => void) {
+    const colRef = collection(db, ERROR_LOGS_COLLECTION);
+    const q = query(colRef, orderBy("createdAt", "desc"));
+    return onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      callback(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, ERROR_LOGS_COLLECTION);
+      if (onError) onError(error);
+    });
+  },
+  async create(log: { message: string; source: string; stack?: string; context?: any; userEmail?: string }): Promise<string> {
+    const id = "err_" + Math.random().toString(36).substring(2, 11);
+    const now = new Date().toISOString();
+    const docRef = doc(db, ERROR_LOGS_COLLECTION, id);
+    try {
+      await setDoc(docRef, { ...log, id, createdAt: now });
+      return id;
+    } catch (error) {
+      console.error("Critical: Failed to log error to Firestore", error);
+      return "";
+    }
+  },
+  async delete(id: string): Promise<void> {
+    const docRef = doc(db, ERROR_LOGS_COLLECTION, id);
+    try {
+      await deleteDoc(docRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, ERROR_LOGS_COLLECTION);
+    }
+  },
+  async clearAll(): Promise<void> {
+    try {
+      const colRef = collection(db, ERROR_LOGS_COLLECTION);
+      const snapshot = await getDocs(colRef);
+      const batch = writeBatch(db);
+      snapshot.docs.forEach(doc => batch.delete(doc.ref));
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, ERROR_LOGS_COLLECTION);
     }
   }
 };

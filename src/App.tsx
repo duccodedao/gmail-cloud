@@ -27,17 +27,27 @@ import { ImportModal } from "./components/ImportModal";
 import { ConfirmModal } from "./components/ConfirmModal";
 import { ToastContainer } from "./components/Toast";
 import { TempEmailView } from "./components/TempEmailView";
-import { accountsRepo, vaultRepo, auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged } from "./lib/firebase";
-import { GmailAccount, VaultItem, AccountStatus, DashboardStats, Theme, ToastMessage } from "./types";
+import { AdminPanel } from "./components/admin/AdminPanel";
+import { LoginView } from "./components/LoginView";
+import { accountsRepo, vaultRepo, allowedUsersRepo, auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "./lib/firebase";
+import { GmailAccount, VaultItem, AccountStatus, DashboardStats, Theme, ToastMessage, AllowedUser } from "./types";
 import { motion, AnimatePresence } from "motion/react";
 import { User } from "firebase/auth";
+import { initGlobalErrorLogging } from "./utils/logger";
+
+// Initialize global error monitoring
+initGlobalErrorLogging();
 
 export default function App() {
-  const ADMIN_EMAILS = ["sonlyhongduc@gmail.com", "sonlyhongduc1@ghn.vn"];
+  const ADMIN_EMAILS = ["sonlyhongduc@gmail.com", "sonlyhongduc.bl@gmail.com", "sonlyhongduc1@ghn.vn"];
   
-  const isAdmin = (email?: string | null) => {
+  const isEmailHardcodedAdmin = (email?: string | null) => {
     if (!email) return false;
     return ADMIN_EMAILS.map(e => e.toLowerCase()).includes(email.toLowerCase());
+  };
+
+  const isAdmin = () => {
+    return currentUserProfile?.role === "admin";
   };
 
   // Navigation & Identity States
@@ -50,6 +60,11 @@ export default function App() {
   // Search & Filter state
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [selectedFilter, setSelectedFilter] = useState<string | null>(null);
+
+  // RBAC states
+  const [allowedUsers, setAllowedUsers] = useState<AllowedUser[]>([]);
+  const [currentUserProfile, setCurrentUserProfile] = useState<AllowedUser | null>(null);
+  const [checkingProfile, setCheckingProfile] = useState<boolean>(true);
 
   // Styling & Theme preference
   const [theme, setTheme] = useState<Theme>(() => {
@@ -105,18 +120,79 @@ export default function App() {
     localStorage.setItem("gmail_cloud_theme", theme);
   }, [theme]);
 
-  // Auth Effect
+  // Auth and Profile Subscription Effect
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       setIsAuthLoading(false);
     });
-    return () => unsubscribe();
+    return () => unsubscribeAuth();
   }, []);
+
+  // Real-time user profile subscription based on firebase auth user
+  useEffect(() => {
+    if (!user || !user.email) {
+      setCurrentUserProfile(null);
+      setCheckingProfile(false);
+      return;
+    }
+
+    const emailLower = user.email.toLowerCase();
+    const isHardcoded = isEmailHardcodedAdmin(emailLower);
+
+    if (isHardcoded) {
+      setCurrentUserProfile({
+        id: emailLower,
+        email: emailLower,
+        name: user.displayName || "Admin",
+        role: "admin",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      setCheckingProfile(false);
+      return;
+    }
+
+    setCheckingProfile(true);
+    const unsubscribeProfile = allowedUsersRepo.subscribeOne(
+      emailLower,
+      (profile) => {
+        setCurrentUserProfile(profile);
+        if (profile && profile.role === "user" && activeTab !== "temp-email") {
+          setActiveTab("temp-email");
+        }
+        setCheckingProfile(false);
+      },
+      (error) => {
+        console.error("Profile subscription error:", error);
+        setCurrentUserProfile(null);
+        setCheckingProfile(false);
+      }
+    );
+
+    return () => unsubscribeProfile();
+  }, [user]);
+
+  // Realtime subscription to allowed users (admin only)
+  useEffect(() => {
+    if (!currentUserProfile || currentUserProfile.role !== "admin") {
+      setAllowedUsers([]);
+      return;
+    }
+
+    const unsubscribeAllowed = allowedUsersRepo.subscribe((users) => {
+      setAllowedUsers(users);
+    }, (error) => {
+      console.error("Error subscribing to allowed users:", error);
+    });
+
+    return () => unsubscribeAllowed();
+  }, [currentUserProfile]);
 
   const handleLogin = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
+      addToast("Đăng nhập thành công!", "success");
     } catch (error) {
       console.error("Login Error", error);
       addToast("Đăng nhập thất bại", "error");
@@ -131,6 +207,8 @@ export default function App() {
       onConfirm: async () => {
         try {
           await signOut(auth);
+          setCurrentUserProfile(null);
+          setAllowedUsers([]);
           addToast("Đã đăng xuất", "info");
         } catch (error) {
           console.error("Logout Error", error);
@@ -143,9 +221,12 @@ export default function App() {
   useEffect(() => {
     if (!user || !user.email) return;
     
-    // Normalize email for check
-    if (!isAdmin(user.email)) {
-      console.warn("User is not authorized as admin:", user.email);
+    // Normalize email for check - only admins can access accounts & vault
+    if (currentUserProfile?.role !== "admin") {
+      setAccounts([]);
+      setVaultItems([]);
+      setIsLoading(false);
+      setIsVaultLoading(false);
       return;
     }
     
@@ -193,7 +274,7 @@ export default function App() {
       if (unsubscribe) unsubscribe();
       if (unsubscribeVault) unsubscribeVault();
     };
-  }, [user]);
+  }, [user, currentUserProfile]);
 
   // Utility to push notifications
   const addToast = (message: string, type: "success" | "error" | "info" | "warning") => {
@@ -594,7 +675,7 @@ export default function App() {
     }
   };
 
-  if (isAuthLoading) {
+  if (isAuthLoading || checkingProfile) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center">
         <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -602,35 +683,71 @@ export default function App() {
     );
   }
 
-  if (!user || !isAdmin(user.email)) {
+  if (!user) {
+    return (
+      <LoginView 
+        onGoogleLogin={handleLogin}
+        onEmailSignIn={async (email, pass) => {
+          try {
+            await signInWithEmailAndPassword(auth, email, pass);
+            addToast("Đăng nhập thành công!", "success");
+          } catch (err: any) {
+            console.error(err);
+            let errorMsg = "Đăng nhập thất bại.";
+            if (err.code === "auth/user-not-found" || err.code === "auth/wrong-password" || err.code === "auth/invalid-credential") {
+              errorMsg = "Email hoặc mật khẩu không chính xác.";
+            }
+            addToast(errorMsg, "error");
+            throw err;
+          }
+        }}
+        onEmailSignUp={async (email, pass, name) => {
+          try {
+            await createUserWithEmailAndPassword(auth, email, pass);
+            await allowedUsersRepo.create({
+              id: email.toLowerCase(),
+              email: email.toLowerCase(),
+              name,
+              role: "user"
+            });
+            addToast("Đăng ký thành công! Bạn có thể sử dụng hòm thư tạm thời.", "success");
+          } catch (err: any) {
+            console.error(err);
+            let errorMsg = "Đăng ký thất bại.";
+            if (err.code === "auth/email-already-in-use") {
+              errorMsg = "Email này đã được sử dụng.";
+            } else if (err.code === "auth/invalid-email") {
+              errorMsg = "Địa chỉ email không hợp lệ.";
+            }
+            addToast(errorMsg, "error");
+            throw err;
+          }
+        }}
+        addToast={addToast}
+      />
+    );
+  }
+
+  if (user && !currentUserProfile) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col items-center justify-center p-4">
         <div className="max-w-md w-full bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-8 text-center shadow-sm">
-          <div className="w-16 h-16 bg-blue-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6">
-            <ShieldAlert className="w-8 h-8 text-blue-500" />
+          <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-rose-500/20">
+            <ShieldAlert className="w-8 h-8 text-rose-500" />
           </div>
           <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-2">
-            Xác thực Quản trị viên
+            Từ Chối Truy Cập
           </h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mb-8 leading-relaxed font-medium">
-            Hệ thống quản lý tài khoản yêu cầu quyền truy cập admin. Vui lòng đăng nhập để tiếp tục.
+          <p className="text-sm text-slate-500 dark:text-slate-400 mb-6 leading-relaxed font-medium text-center">
+            Tài khoản <span className="font-bold text-slate-700 dark:text-slate-300">{user.email}</span> không được phép truy cập hệ thống. Vui lòng liên hệ Quản trị viên (Admin) để được cấp quyền.
           </p>
           
           <button
-            onClick={handleLogin}
-            className="w-full flex items-center justify-center gap-3 px-6 py-3.5 rounded-xl text-sm font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/20 transition-all cursor-pointer"
+            onClick={handleLogout}
+            className="w-full flex items-center justify-center gap-3 px-6 py-3.5 rounded-xl text-sm font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
           >
-            Đăng nhập bằng Google
+            Đăng xuất / Thử tài khoản khác
           </button>
-
-          {user && !isAdmin(user.email) && (
-            <div className="mt-6 p-4 rounded-xl bg-rose-500/10 text-rose-600 dark:text-rose-400 text-sm font-semibold border border-rose-500/20">
-              Tài khoản {user.email} không có quyền truy cập quản trị. 
-              <button onClick={handleLogout} className="ml-2 underline font-bold cursor-pointer">
-                Đăng xuất
-              </button>
-            </div>
-          )}
         </div>
       </div>
     );
@@ -645,10 +762,12 @@ export default function App() {
         setActiveTab={setActiveTab}
         theme={theme}
         userEmail={userEmail}
+        userName={currentUserProfile?.name || ""}
         sidebarOpen={sidebarOpen}
         setSidebarOpen={setSidebarOpen}
         totalAccounts={accounts.length}
         onLogout={handleLogout}
+        isAdmin={isAdmin()}
       />
 
       {/* 2. MAIN APPLICATION CONTENT VIEWPORTS */}
@@ -682,12 +801,69 @@ export default function App() {
                 transition={{ duration: 0.25 }}
                 className="space-y-8"
               >
-                {/* Stats row with counter counters */}
-                <StatsCards 
-                  stats={stats}
-                  onSelectStatusFilter={setSelectedFilter}
-                  selectedFilter={selectedFilter}
-                />
+                {/* Status filter tabs */}
+                <div className="flex flex-wrap gap-2 pb-2">
+                  <button
+                    onClick={() => setSelectedFilter(null)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                      selectedFilter === null
+                        ? "bg-blue-600 border-blue-600 text-white"
+                        : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-850"
+                    }`}
+                  >
+                    Tất cả ({stats.total})
+                  </button>
+                  <button
+                    onClick={() => setSelectedFilter("ACTIVE")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                      selectedFilter === "ACTIVE"
+                        ? "bg-emerald-600 border-emerald-600 text-white"
+                        : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-850"
+                    }`}
+                  >
+                    Đang hoạt động ({stats.active})
+                  </button>
+                  <button
+                    onClick={() => setSelectedFilter("UNUSED")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                      selectedFilter === "UNUSED"
+                        ? "bg-amber-600 border-amber-600 text-white"
+                        : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-850"
+                    }`}
+                  >
+                    Chưa sử dụng ({stats.unused})
+                  </button>
+                  <button
+                    onClick={() => setSelectedFilter("IN_USE")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                      selectedFilter === "IN_USE"
+                        ? "bg-blue-600 border-blue-600 text-white"
+                        : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-850"
+                    }`}
+                  >
+                    Đang sử dụng ({stats.inUse})
+                  </button>
+                  <button
+                    onClick={() => setSelectedFilter("LOCKED")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                      selectedFilter === "LOCKED"
+                        ? "bg-rose-600 border-rose-600 text-white"
+                        : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-850"
+                    }`}
+                  >
+                    Đã khóa ({stats.locked})
+                  </button>
+                  <button
+                    onClick={() => setSelectedFilter("SUSPENDED")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                      selectedFilter === "SUSPENDED"
+                        ? "bg-slate-600 border-slate-600 text-white"
+                        : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-850"
+                    }`}
+                  >
+                    Tạm ngưng ({stats.suspended})
+                  </button>
+                </div>
 
                 {/* Dashboard Main Table view (optimized to full width) */}
                 <div className="space-y-6">
@@ -887,6 +1063,7 @@ export default function App() {
                   addToast={addToast} 
                   onAddAccount={handleSaveAccount} 
                   existingEmails={accounts.map(a => a.email)}
+                  userProfile={currentUserProfile}
                 />
               </motion.div>
             )}
@@ -1073,6 +1250,33 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+              </motion.div>
+            )}
+
+            {/* TAB 5: ADMIN PANEL */}
+            {activeTab === "admin-panel" && currentUserProfile?.role === "admin" && (
+              <motion.div
+                key="admin-panel-view"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.25 }}
+              >
+                <AdminPanel 
+                  stats={stats}
+                  allowedUsers={allowedUsers}
+                  onAddUser={async (user) => {
+                    await allowedUsersRepo.create(user);
+                  }}
+                  onEditUser={async (id, updates) => {
+                    await allowedUsersRepo.update(id, updates);
+                  }}
+                  onDeleteUser={async (id) => {
+                    console.log(`App: Deleting user ID: ${id}`);
+                    await allowedUsersRepo.delete(id);
+                  }}
+                  addToast={addToast}
+                />
               </motion.div>
             )}
 

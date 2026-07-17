@@ -23,7 +23,8 @@ import {
   BarChart3,
   Database,
   Search,
-  XCircle
+  XCircle,
+  Key
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
@@ -35,15 +36,18 @@ import {
   TempEmailMessage,
   GeneratedEmailInfo
 } from "../services/tempEmailService";
-import { GmailAccount, AccountStatus } from "../types";
+import { GmailAccount, AccountStatus, AllowedUser } from "../types";
+import { domainReportsRepo, domainStatusRepo, tempEmailsLogRepo } from "../lib/firebase";
+import { extractOTP } from "../utils/otp";
 
 interface TempEmailViewProps {
   addToast: (message: string, type: "success" | "error" | "info" | "warning") => void;
   onAddAccount?: (payload: Omit<GmailAccount, "id" | "createdAt" | "updatedAt">) => Promise<void>;
   existingEmails?: string[];
+  userProfile: AllowedUser | null;
 }
 
-export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAccount, existingEmails }) => {
+export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAccount, existingEmails, userProfile }) => {
   const [emailInfo, setEmailInfo] = useState<GeneratedEmailInfo | null>(null);
   const [customPrefix, setCustomPrefix] = useState<string>("");
   const [selectedDomain, setSelectedDomain] = useState<string>("");
@@ -53,12 +57,13 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
   const [messages, setMessages] = useState<TempEmailMessage[]>([]);
   const [selectedMessage, setSelectedMessage] = useState<TempEmailMessage | null>(null);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
-  const [countdown, setCountdown] = useState<number>(3);
+  const [countdown, setCountdown] = useState<number>(10);
   const [copied, setCopied] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"html" | "text">("html");
   const [isAddingToDashboard, setIsAddingToDashboard] = useState<boolean>(false);
   const [accountNote, setAccountNote] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const [domainStatuses, setDomainStatuses] = useState<any[]>([]);
   const [emailHistory, setEmailHistory] = useState<Array<{
     email: string;
     login: string;
@@ -67,11 +72,29 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
     addedToDashboard: boolean;
     note?: string;
   }>>([]);
+  const [otpMap, setOtpMap] = useState<Record<string, string>>({});
+
+
 
   // Fetch available domains on mount and load/generate email
   useEffect(() => {
     async function init() {
-      const domains = await getAvailableDomains();
+      const rawDomains = await getAvailableDomains();
+      
+      // Subscribe to domain statuses
+      const unsubscribe = domainStatusRepo.subscribe((statuses) => {
+          setDomainStatuses(statuses);
+      });
+      
+      const domainStatusesList = await domainStatusRepo.getAll();
+      
+      const workingDomains = rawDomains.filter(dom => {
+        const stat = domainStatusesList.find(s => s.domain === dom);
+        return stat ? stat.isWorking : true; // Default to true
+      });
+      
+      const domains = workingDomains.length > 0 ? workingDomains : rawDomains;
+      
       setAvailableDomains(domains);
 
       // Load history
@@ -155,6 +178,18 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
           const updatedHistory = [currentItem, ...historyList].slice(0, 50);
           localStorage.setItem("temp_emails_history", JSON.stringify(updatedHistory));
           setEmailHistory(updatedHistory);
+          
+          try {
+            const { auth } = await import("../lib/firebase");
+            const currentUser = auth.currentUser;
+            await tempEmailsLogRepo.create({
+              email: info.email,
+              domain: info.domain,
+              userEmail: currentUser?.email || "Người dùng (Ẩn danh)"
+            });
+          } catch (e) {
+            console.error("Failed to log temp email", e);
+          }
         } catch (err: any) {
           console.error("Error auto-generating initial email", err);
           setEmailHistory(historyList);
@@ -168,6 +203,39 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
     init();
   }, [emailMode]);
 
+  // Extract OTPs for existing messages if not already in otpMap
+  useEffect(() => {
+    if (!emailInfo || messages.length === 0) return;
+
+    // Only scan the most recent 10 messages to avoid rate limits
+    const unscanned = messages
+      .slice(0, 10)
+      .filter(m => !otpMap[m.id]);
+
+    if (unscanned.length === 0) return;
+
+    const scanMessages = async () => {
+      for (const msg of unscanned) {
+        // Skip if already scanned in another batch
+        if (otpMap[msg.id]) continue;
+        
+        try {
+          // Add a small delay between requests
+          await new Promise(r => setTimeout(r, 300));
+          const details = await fetchMessageDetails(emailInfo, msg.id, false);
+          const otp = extractOTP(details.textBody || details.body || "", details.from, details.subject);
+          if (otp) {
+            setOtpMap(prev => ({ ...prev, [msg.id]: otp }));
+          }
+        } catch (e) {
+          // ignore individual fetch errors
+        }
+      }
+    };
+
+    scanMessages();
+  }, [messages, emailInfo]);
+
   // Poll for new messages every 3 seconds
   useEffect(() => {
     if (!emailInfo) return;
@@ -176,7 +244,7 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
       setCountdown((prev) => {
         if (prev <= 1) {
           triggerCheck();
-          return 3;
+          return 10;
         }
         return prev - 1;
       });
@@ -190,8 +258,22 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
     try {
       const latest = await fetchMessages(emailInfo);
       if (latest.length > messages.length) {
-        const newCount = latest.length - messages.length;
+        const newMessages = latest.filter(m => !messages.find(prev => prev.id === m.id));
+        const newCount = newMessages.length;
         addToast(`Nhận thành công ${newCount} thư mới!`, "success");
+        
+        // Auto-extract OTP for new messages
+        newMessages.forEach(async (msg) => {
+          try {
+            const details = await fetchMessageDetails(emailInfo, msg.id, false);
+            const otp = extractOTP(details.textBody || details.body || "", details.from, details.subject);
+            if (otp) {
+              setOtpMap(prev => ({ ...prev, [msg.id]: otp }));
+            }
+          } catch (e) {
+            console.error("Failed to auto-extract OTP", e);
+          }
+        });
         
         // Soft audio alert
         try {
@@ -216,6 +298,14 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
   };
 
   const handleGenerateNew = async (modeToUse = emailMode, showToast = true) => {
+    // Check email limit
+    if (userProfile && userProfile.emailLimit && userProfile.emailLimit > 0) {
+      if (emailHistory.length >= userProfile.emailLimit) {
+        addToast("Bạn đã đạt giới hạn tạo email!", "warning");
+        return;
+      }
+    }
+    
     setIsRefreshing(true);
     try {
       const customDom = selectedDomain || undefined;
@@ -245,6 +335,18 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
         localStorage.setItem("temp_emails_history", JSON.stringify(updated));
         return updated;
       });
+
+      try {
+        const { auth } = await import("../lib/firebase");
+        const currentUser = auth.currentUser;
+        await tempEmailsLogRepo.create({
+          email: info.email,
+          domain: info.domain,
+          userEmail: currentUser?.email || "Người dùng (Ẩn danh)"
+        });
+      } catch (e) {
+        console.error("Failed to log temp email", e);
+      }
 
       if (showToast) {
         addToast(
@@ -332,10 +434,6 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
 
   const handleDeleteHistoryItem = (email: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (existingEmails?.includes(email)) {
-      addToast("Không thể xóa email đã được thêm vào Dashboard!", "warning");
-      return;
-    }
     
     setEmailHistory((prev) => {
       const updated = prev.filter((item) => item.email !== email);
@@ -345,19 +443,10 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
     addToast("Đã xóa email khỏi lịch sử!", "success");
   };
 
-  const handleClearDeletableHistory = () => {
-    const activeEmailsInDB = existingEmails || [];
-    const beforeCount = emailHistory.length;
-    const itemsToKeep = emailHistory.filter((item) => activeEmailsInDB.includes(item.email));
-    
-    if (itemsToKeep.length === beforeCount) {
-      addToast("Không có email nào có thể xóa (tất cả đều đã thêm vào Dashboard)!", "info");
-      return;
-    }
-
-    setEmailHistory(itemsToKeep);
-    localStorage.setItem("temp_emails_history", JSON.stringify(itemsToKeep));
-    addToast(`Đã dọn dẹp lịch sử, giữ lại ${itemsToKeep.length} email đang trong Dashboard!`, "success");
+  const handleClearHistory = () => {
+    setEmailHistory([]);
+    localStorage.removeItem("temp_emails_history");
+    addToast("Đã xóa toàn bộ lịch sử!", "success");
   };
 
   const handleCopy = () => {
@@ -409,6 +498,30 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
   };
 
 
+
+  const handleReportError = async () => {
+    if (!emailInfo || !emailInfo.domain) return;
+    
+    try {
+      const hasReport = await domainReportsRepo.hasReport(emailInfo.domain);
+      if (hasReport) {
+        addToast(`Tên miền ${emailInfo.domain} đã được báo cáo rồi!`, "warning");
+        return;
+      }
+
+      const { auth } = await import("../lib/firebase");
+      const currentUser = auth.currentUser;
+      await domainReportsRepo.create({
+        domain: emailInfo.domain,
+        userEmail: currentUser?.email || "Người dùng (Ẩn danh)",
+        userName: currentUser?.displayName || "Người dùng (Ẩn danh)",
+        note: `Domain ${emailInfo.domain} không nhận được thư.`
+      });
+      addToast(`Đã báo cáo domain ${emailInfo.domain} bị lỗi.`, "success");
+    } catch (err) {
+      addToast("Không thể gửi báo cáo lỗi.", "error");
+    }
+  };
 
   return (
     <div className="space-y-8" id="temp-email-hub">
@@ -485,7 +598,7 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
               </div>
 
               {/* Special Addition Trigger Button */}
-              {emailInfo && onAddAccount && (
+              {emailInfo && onAddAccount && userProfile?.role === "admin" && (
                 <div className="space-y-2 pt-1.5">
                   {!existingEmails?.includes(emailInfo.email) && (
                     <div className="space-y-1">
@@ -521,7 +634,7 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
               )}
 
               <p className="text-[10px] text-slate-400 font-medium">
-                ✓ Đây là hòm thư rác thực tế có thời hạn hoạt động. Bạn có thể sử dụng để đăng ký tài khoản thật!
+                <CheckCircle2 className="w-3 h-3 text-emerald-500 inline mr-1" /> Đây là hòm thư rác thực tế có thời hạn hoạt động. Bạn có thể sử dụng để đăng ký tài khoản thật!
               </p>
             </div>
 
@@ -557,6 +670,11 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
                       </option>
                     ))}
                   </select>
+                  {selectedDomain && domainStatuses.find(s => s.domain === selectedDomain) && (
+                      <p className={`text-[10px] mt-1 font-bold ${domainStatuses.find(s => s.domain === selectedDomain)?.isWorking ? "text-emerald-600" : "text-rose-600"}`}>
+                          {domainStatuses.find(s => s.domain === selectedDomain)?.isWorking ? "Domain đang hoạt động" : "Cảnh báo: Domain có thể xảy ra lỗi"}
+                      </p>
+                  )}
                 </div>
               ) : (
                 <div />
@@ -582,7 +700,22 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
                 Làm Mới Inbox
               </button>
             </div>
+
+            {/* Error Report Button */}
+            {emailInfo && (
+              <div className="pt-2">
+                <button
+                  onClick={handleReportError}
+                  className="flex items-center justify-center gap-1.5 w-full py-2.5 rounded-2xl text-[11px] font-bold bg-rose-50 hover:bg-rose-100 dark:bg-rose-500/10 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 transition-all cursor-pointer"
+                >
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  Báo cáo Tên miền này không nhận được thư
+                </button>
+              </div>
+            )}
           </div>
+
+
 
         </div>
 
@@ -627,7 +760,7 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
                     <div className="space-y-1">
                       <p className="text-sm font-bold text-slate-700 dark:text-slate-300">Chưa có thư gửi đến</p>
                       <p className="text-[11px] text-slate-400 max-w-xs leading-relaxed font-medium">
-                        Hệ thống kiểm tra thư tự động theo thời gian thực (mỗi 3 giây). Thử bấm nút <strong>"Bắn Thử 1 Email"</strong> để kích hoạt.
+                        Hệ thống kiểm tra thư tự động theo thời gian thực (mỗi 3 giây). Hãy gửi email thực tế đến địa chỉ này để nhận thư.
                       </p>
                     </div>
                   </motion.div>
@@ -698,6 +831,24 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
                             }`}>
                               {msg.subject}
                             </p>
+
+                            {/* OTP Display Badge */}
+                            {otpMap[msg.id] && (
+                              <div 
+                                className="mt-1 flex items-center gap-1.5"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigator.clipboard.writeText(otpMap[msg.id]);
+                                  addToast(`Đã sao chép mã OTP: ${otpMap[msg.id]}`, "success");
+                                }}
+                              >
+                                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 text-[11px] font-black shadow-sm group/otp hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-all cursor-copy">
+                                  <Key className="w-3 h-3" />
+                                  Mã OTP: {otpMap[msg.id]}
+                                  <Copy className="w-2.5 h-2.5 opacity-0 group-hover/otp:opacity-100 transition-opacity" />
+                                </span>
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -762,15 +913,15 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
               </div>
             </div>
 
-            {/* Clear history button for non-added items */}
-            {emailHistory.some((item) => !existingEmails?.includes(item.email)) && (
+            {/* Clear history button */}
+            {emailHistory.length > 0 && userProfile?.role === "admin" && (
               <button
-                onClick={handleClearDeletableHistory}
+                onClick={handleClearHistory}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-rose-200 hover:border-rose-300 bg-rose-50/40 hover:bg-rose-50 dark:border-rose-950/20 dark:hover:bg-rose-950/30 text-rose-600 dark:text-rose-400 transition-all duration-200 text-xs font-bold shadow-sm cursor-pointer"
-                title="Xóa tất cả các email chưa thêm hoặc đã xóa khỏi Dashboard"
+                title="Xóa toàn bộ lịch sử tạo mail"
               >
                 <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-                Dọn lịch sử
+                Xóa lịch sử
               </button>
             )}
 
@@ -898,7 +1049,6 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
                         {/* Action column */}
                         <td className="px-4 py-3 text-right whitespace-nowrap">
                           <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
-                            {!isCurrentlyInDB && (
                               <button
                                 onClick={(e) => handleDeleteHistoryItem(item.email, e)}
                                 className="p-1.5 rounded-lg bg-slate-50 hover:bg-rose-50 dark:bg-slate-950/40 dark:hover:bg-rose-950/60 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors duration-150 border border-slate-100 dark:border-slate-800"
@@ -906,7 +1056,6 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
-                            )}
                             <button
                               onClick={() => handleSwitchToEmail(item)}
                               className="p-1.5 rounded-lg bg-slate-50 hover:bg-indigo-50 dark:bg-slate-950/40 dark:hover:bg-indigo-950/60 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors duration-150 border border-slate-100 dark:border-slate-800"

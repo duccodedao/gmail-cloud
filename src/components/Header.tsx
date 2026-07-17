@@ -37,6 +37,8 @@ export const Header: React.FC<HeaderProps> = ({
         return "Nhập & Xuất";
       case "settings":
         return "Cài đặt hệ thống";
+      case "admin-panel":
+        return "Admin Panel";
       default:
         return "Trang chủ";
     }

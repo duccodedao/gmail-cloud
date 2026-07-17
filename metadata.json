@@ -1,6 +1,6 @@
 {
-  "name": "Gmail Cloud",
-  "description": "Một nền tảng quản lý tài khoản Gmail nâng cao, bảo mật và tinh tế với giao diện tối ưu.",
+  "name": "Gmail Cloud - Quản lý Email & OTP Tự động",
+  "description": "Gmail Cloud là nền tảng quản lý email tạm thời và OTP tự động chuyên nghiệp. Hỗ trợ tạo email nhanh, lọc mã OTP thông minh, bảo mật cao và giao diện tinh tế cho người dùng cá nhân và doanh nghiệp.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

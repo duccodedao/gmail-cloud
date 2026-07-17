@@ -41,6 +41,48 @@ export interface VaultItem {
 
 export type Theme = "light" | "dark";
 
+export interface AllowedUser {
+  id: string; // Document ID (usually the lowercase email)
+  email: string;
+  name: string;
+  role: "admin" | "user";
+  emailLimit?: number; // Optional limit for email creation
+  note?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DomainStatus {
+  id: string; // Document ID (the domain name itself)
+  domain: string;
+  isWorking: boolean;
+  updatedAt: string;
+}
+
+export interface DomainReport {
+  id: string;
+  domain: string;
+  userEmail: string;
+  userName: string;
+  note: string;
+  createdAt: string;
+}
+
+export interface TempEmailLog {
+  id: string;
+  email: string;
+  domain: string;
+  userEmail: string;
+  createdAt: string;
+}
+
+export interface TestHistory {
+  id: string;
+  domain: string;
+  status: "Hợp lệ" | "Hỏng";
+  testedAt: string;
+}
+
 export interface ToastMessage {
   id: string;
   message: string;

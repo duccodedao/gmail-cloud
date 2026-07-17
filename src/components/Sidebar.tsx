@@ -23,10 +23,12 @@ interface SidebarProps {
   setActiveTab: (tab: string) => void;
   theme: Theme;
   userEmail: string;
+  userName: string;
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
   totalAccounts: number;
   onLogout: () => void;
+  isAdmin: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -34,19 +36,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
   setActiveTab,
   theme,
   userEmail,
+  userName,
   sidebarOpen,
   setSidebarOpen,
   totalAccounts,
-  onLogout
+  onLogout,
+  isAdmin
 }) => {
   const [promoCopied, setPromoCopied] = React.useState(false);
 
-  const menuItems = [
+  const menuItems = isAdmin ? [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "accounts", label: "Danh sách Email", icon: Mail },
     { id: "temp-email", label: "Gmail Tạm Thời", icon: Sparkles },
     { id: "sync", label: "Nhập & Xuất", icon: ArrowLeftRight },
-    { id: "settings", label: "Cài đặt hệ thống", icon: Settings }
+    { id: "settings", label: "Cài đặt hệ thống", icon: Settings },
+    { id: "admin-panel", label: "Admin Panel", icon: ShieldCheck }
+  ] : [
+    { id: "temp-email", label: "Gmail Tạm Thời", icon: Sparkles }
   ];
 
   const handleNav = (tabId: string) => {
@@ -190,7 +197,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span className="absolute bottom-0 right-0 block h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-slate-900"></span>
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">Hồng Đức</p>
+            <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">{userName || "Hồng Đức"}</p>
             <p className="text-[10px] font-semibold text-slate-400 truncate tracking-wide">{userEmail}</p>
           </div>
           <button 
