@@ -217,6 +217,17 @@ export default function App() {
     });
   };
 
+  const handleDirectLogout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentUserProfile(null);
+      setAllowedUsers([]);
+      addToast("Đã đăng xuất", "info");
+    } catch (error) {
+      console.error("Logout Error", error);
+    }
+  };
+
   // Initial connection test and dataloading - Switch to Real-time subscription
   useEffect(() => {
     if (!user || !user.email) return;
@@ -743,7 +754,7 @@ export default function App() {
           </p>
           
           <button
-            onClick={handleLogout}
+            onClick={handleDirectLogout}
             className="w-full flex items-center justify-center gap-3 px-6 py-3.5 rounded-xl text-sm font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
           >
             Đăng xuất / Thử tài khoản khác

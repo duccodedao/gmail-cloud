@@ -167,24 +167,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-        {/* Cloud Database Storage Monitor (Unlimited real storage) */}
-        <div className="px-6 py-4 mx-4 mb-4 rounded-2xl bg-gradient-to-br from-blue-500/5 to-emerald-500/5 dark:from-blue-400/5 dark:to-emerald-400/5 border border-blue-500/10 dark:border-emerald-500/20">
-          <div className="flex items-center gap-2 mb-1.5">
-            <Database className="w-4 h-4 text-[#4285F4] dark:text-[#60a5fa]" />
-            <span className="text-xs font-bold text-slate-800 dark:text-slate-200">Không Gian Lưu Trữ</span>
-          </div>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal mb-2.5 font-medium">
-            Đang sử dụng hệ thống đám mây thực tế với khả năng mở rộng không giới hạn dữ liệu.
-          </p>
-          <div className="w-full bg-slate-100 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden mb-1">
-            <div className="bg-gradient-to-r from-[#4285F4] to-[#34A853] h-full w-full rounded-full animate-pulse" />
-          </div>
-          <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 font-semibold">
-            <span>{totalAccounts} Tài khoản</span>
-            <span className="text-emerald-600 dark:text-emerald-400 font-bold">VÔ HẠN (UNLIMITED)</span>
-          </div>
-        </div>
-
         {/* User Identity Footer */}
         <div className="flex items-center gap-3 p-4 border-t border-slate-200/80 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/50">
           <div className="relative">

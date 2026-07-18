@@ -18,21 +18,28 @@ async function fetchWithRetry(url: string, options: RequestInit = {}) {
   const userAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0'
   ];
 
   for (let i = 0; i <= retries; i++) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    const timeoutId = setTimeout(() => controller.abort(), 20000); // Increased timeout to 20s
 
     try {
+      const ua = userAgents[Math.floor(Math.random() * userAgents.length)];
+      console.log(`[Proxy] Fetching ${url} (Attempt ${i + 1}) with UA: ${ua.substring(0, 30)}...`);
+      
       const response = await fetch(url, {
         ...options,
         signal: controller.signal,
         headers: {
-          'User-Agent': userAgents[i % userAgents.length],
-          'Accept': 'application/json',
+          'User-Agent': ua,
+          'Accept': 'application/json, text/plain, */*',
+          'Accept-Language': 'en-US,en;q=0.9',
           'Referer': 'https://inboxes.com/',
+          'Origin': 'https://inboxes.com',
           ...options.headers,
         }
       });

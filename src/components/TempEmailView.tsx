@@ -37,7 +37,7 @@ import {
   GeneratedEmailInfo
 } from "../services/tempEmailService";
 import { GmailAccount, AccountStatus, AllowedUser } from "../types";
-import { domainReportsRepo, domainStatusRepo, tempEmailsLogRepo } from "../lib/firebase";
+import { auth, domainReportsRepo, domainStatusRepo, tempEmailsLogRepo, tempEmailHistoryRepo } from "../lib/firebase";
 import { extractOTP } from "../utils/otp";
 
 interface TempEmailViewProps {
@@ -79,129 +79,123 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
   // Fetch available domains on mount and load/generate email
   useEffect(() => {
     async function init() {
-      const rawDomains = await getAvailableDomains();
-      
-      // Subscribe to domain statuses
-      const unsubscribe = domainStatusRepo.subscribe((statuses) => {
-          setDomainStatuses(statuses);
-      });
-      
-      const domainStatusesList = await domainStatusRepo.getAll();
-      
-      const workingDomains = rawDomains.filter(dom => {
-        const stat = domainStatusesList.find(s => s.domain === dom);
-        return stat ? stat.isWorking : true; // Default to true
-      });
-      
-      const domains = workingDomains.length > 0 ? workingDomains : rawDomains;
-      
-      setAvailableDomains(domains);
+      try {
+        const rawDomains = await getAvailableDomains();
+        
+        const domainStatusesList = await domainStatusRepo.getAll();
+        
+        const workingDomains = rawDomains.filter(dom => {
+          const stat = domainStatusesList.find(s => s.domain === dom);
+          return stat ? stat.isWorking : true; // Default to true
+        });
+        
+        const domains = workingDomains.length > 0 ? workingDomains : rawDomains;
+        
+        setAvailableDomains(domains);
 
-      // Load history
-      const savedHistory = localStorage.getItem("temp_emails_history");
-      let historyList: Array<{
-        email: string;
-        login: string;
-        domain: string;
-        generatedAt: string;
-        addedToDashboard: boolean;
-        note?: string;
-      }> = [];
-      if (savedHistory) {
-        try {
-          historyList = JSON.parse(savedHistory);
-        } catch (e) {
-          console.error("Failed to parse history", e);
-        }
-      }
-      
-      const saved = localStorage.getItem("temp_gmail_info");
-      if (saved) {
-        try {
-          const info = JSON.parse(saved);
-          if (info && info.email && info.login && info.domain) {
-            setEmailInfo(info);
-            if (domains.includes(info.domain)) {
-              setSelectedDomain(info.domain);
-            } else if (domains.length > 0) {
-              setSelectedDomain(domains[0]);
+        const saved = localStorage.getItem("temp_gmail_info");
+        if (saved) {
+          try {
+            const info = JSON.parse(saved);
+            if (info && info.email && info.login && info.domain) {
+              setEmailInfo(info);
+              if (domains.includes(info.domain)) {
+                setSelectedDomain(info.domain);
+              } else if (domains.length > 0) {
+                setSelectedDomain(domains[0]);
+              }
+
+              // Ensure current active loaded email is in the history
+              if (userProfile?.email) {
+                const history = await tempEmailHistoryRepo.getAll(userProfile.email);
+                if (!history.some((item) => item.email === info.email)) {
+                  await tempEmailHistoryRepo.create({
+                    email: info.email,
+                    login: info.login,
+                    domain: info.domain,
+                    generatedAt: new Date().toISOString(),
+                    addedToDashboard: false,
+                    ownerEmail: userProfile.email
+                  });
+                }
+              }
+
+              fetchMessages(info)
+                .then((latest) => {
+                  setMessages(latest);
+                })
+                .catch((err) => {
+                  console.error("Failed to load saved messages on mount", err);
+                });
+              return;
             }
+          } catch (e) {
+            console.error("Failed to parse saved email info", e);
+          }
+        }
 
-            // Ensure current active loaded email is in the history
-            if (!historyList.some((item) => item.email === info.email)) {
-              const currentItem = {
+        // If no saved email, wait until domains are set and generate one using the first domain
+        if (domains.length > 0) {
+          setSelectedDomain(domains[0]);
+          setIsRefreshing(true);
+          try {
+            const info = await generateTempEmail("real", undefined, domains[0]);
+            setEmailInfo(info);
+            setMessages([]);
+            setSelectedMessage(null);
+            setCountdown(3);
+            localStorage.setItem("temp_gmail_info", JSON.stringify(info));
+
+            if (userProfile?.email) {
+              await tempEmailHistoryRepo.create({
                 email: info.email,
                 login: info.login,
                 domain: info.domain,
                 generatedAt: new Date().toISOString(),
-                addedToDashboard: false
-              };
-              historyList = [currentItem, ...historyList].slice(0, 50);
-              localStorage.setItem("temp_emails_history", JSON.stringify(historyList));
-            }
-
-            setEmailHistory(historyList);
-
-            fetchMessages(info)
-              .then((latest) => {
-                setMessages(latest);
-              })
-              .catch((err) => {
-                console.error("Failed to load saved messages on mount", err);
+                addedToDashboard: false,
+                ownerEmail: userProfile.email
               });
-            return;
+            }
+            
+            try {
+              const currentUser = auth.currentUser;
+              await tempEmailsLogRepo.create({
+                email: info.email,
+                domain: info.domain,
+                userEmail: currentUser?.email || "Người dùng (Ẩn danh)"
+              });
+            } catch (e) {
+              console.error("Failed to log temp email", e);
+            }
+          } catch (err: any) {
+            console.error("Error auto-generating initial email", err);
+          } finally {
+            setIsRefreshing(false);
           }
-        } catch (e) {
-          console.error("Failed to parse saved email info", e);
         }
-      }
-
-      // If no saved email, wait until domains are set and generate one using the first domain
-      if (domains.length > 0) {
-        setSelectedDomain(domains[0]);
-        setIsRefreshing(true);
-        try {
-          const info = await generateTempEmail("real", undefined, domains[0]);
-          setEmailInfo(info);
-          setMessages([]);
-          setSelectedMessage(null);
-          setCountdown(3);
-          localStorage.setItem("temp_gmail_info", JSON.stringify(info));
-
-          const currentItem = {
-            email: info.email,
-            login: info.login,
-            domain: info.domain,
-            generatedAt: new Date().toISOString(),
-            addedToDashboard: false
-          };
-          const updatedHistory = [currentItem, ...historyList].slice(0, 50);
-          localStorage.setItem("temp_emails_history", JSON.stringify(updatedHistory));
-          setEmailHistory(updatedHistory);
-          
-          try {
-            const { auth } = await import("../lib/firebase");
-            const currentUser = auth.currentUser;
-            await tempEmailsLogRepo.create({
-              email: info.email,
-              domain: info.domain,
-              userEmail: currentUser?.email || "Người dùng (Ẩn danh)"
-            });
-          } catch (e) {
-            console.error("Failed to log temp email", e);
-          }
-        } catch (err: any) {
-          console.error("Error auto-generating initial email", err);
-          setEmailHistory(historyList);
-        } finally {
-          setIsRefreshing(false);
-        }
-      } else {
-        setEmailHistory(historyList);
+      } catch (err) {
+        console.error("Failed to initialize temp email view:", err);
       }
     }
     init();
-  }, [emailMode]);
+  }, [emailMode, userProfile?.email]);
+
+  // Subscribe to domain statuses
+  useEffect(() => {
+    const unsubscribe = domainStatusRepo.subscribe((statuses) => {
+      setDomainStatuses(statuses);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Subscribe to history
+  useEffect(() => {
+    if (!userProfile?.email) return;
+    const unsubscribe = tempEmailHistoryRepo.subscribe(userProfile.email, (history) => {
+      setEmailHistory(history);
+    });
+    return () => unsubscribe();
+  }, [userProfile?.email]);
 
   // Extract OTPs for existing messages if not already in otpMap
   useEffect(() => {
@@ -315,29 +309,21 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
       setSelectedMessage(null);
       setCountdown(3);
       
-      // Save to localStorage
       localStorage.setItem("temp_gmail_info", JSON.stringify(info));
 
-      // Save to history
-      const newItem = {
-        email: info.email,
-        login: info.login,
-        domain: info.domain,
-        generatedAt: new Date().toISOString(),
-        addedToDashboard: false
-      };
-      setEmailHistory((prev) => {
-        // Avoid duplicate items with exact same email
-        if (prev.some((item) => item.email === info.email)) {
-          return prev;
-        }
-        const updated = [newItem, ...prev].slice(0, 50);
-        localStorage.setItem("temp_emails_history", JSON.stringify(updated));
-        return updated;
-      });
+      // Save to history (Firestore)
+      if (userProfile?.email) {
+        await tempEmailHistoryRepo.create({
+          email: info.email,
+          login: info.login,
+          domain: info.domain,
+          generatedAt: new Date().toISOString(),
+          addedToDashboard: false,
+          ownerEmail: userProfile.email
+        });
+      }
 
       try {
-        const { auth } = await import("../lib/firebase");
         const currentUser = auth.currentUser;
         await tempEmailsLogRepo.create({
           email: info.email,
@@ -377,17 +363,13 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
       addToast(`Đã thêm thành công email ${emailInfo.email} vào Dashboard!`, "success");
       setAccountNote(""); // reset note after successful add
 
-      // Update history list item state and localStorage
-      setEmailHistory((prev) => {
-        const updated = prev.map((item) => {
-          if (item.email === emailInfo.email) {
-            return { ...item, addedToDashboard: true, note: finalNote };
-          }
-          return item;
+      // Update history list item state in Firestore
+      if (userProfile?.email) {
+        await tempEmailHistoryRepo.update(emailInfo.email, { 
+          addedToDashboard: true, 
+          note: finalNote 
         });
-        localStorage.setItem("temp_emails_history", JSON.stringify(updated));
-        return updated;
-      });
+      }
     } catch (err: any) {
       addToast(`Lỗi khi thêm email: ${err.message || "Vui lòng thử lại!"}`, "error");
     } finally {
@@ -432,21 +414,25 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
     }
   };
 
-  const handleDeleteHistoryItem = (email: string, e: React.MouseEvent) => {
+  const handleDeleteHistoryItem = async (email: string, e: React.MouseEvent) => {
     e.stopPropagation();
     
-    setEmailHistory((prev) => {
-      const updated = prev.filter((item) => item.email !== email);
-      localStorage.setItem("temp_emails_history", JSON.stringify(updated));
-      return updated;
-    });
-    addToast("Đã xóa email khỏi lịch sử!", "success");
+    try {
+      await tempEmailHistoryRepo.delete(email);
+      addToast("Đã xóa email khỏi lịch sử!", "success");
+    } catch (err) {
+      addToast("Lỗi khi xóa lịch sử", "error");
+    }
   };
 
-  const handleClearHistory = () => {
-    setEmailHistory([]);
-    localStorage.removeItem("temp_emails_history");
-    addToast("Đã xóa toàn bộ lịch sử!", "success");
+  const handleClearHistory = async () => {
+    if (!userProfile?.email) return;
+    try {
+      await tempEmailHistoryRepo.clearAll(userProfile.email);
+      addToast("Đã xóa toàn bộ lịch sử!", "success");
+    } catch (err) {
+      addToast("Lỗi khi xóa lịch sử", "error");
+    }
   };
 
   const handleCopy = () => {
@@ -509,7 +495,6 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
         return;
       }
 
-      const { auth } = await import("../lib/firebase");
       const currentUser = auth.currentUser;
       await domainReportsRepo.create({
         domain: emailInfo.domain,
@@ -526,36 +511,6 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
   return (
     <div className="space-y-8" id="temp-email-hub">
       
-      {/* Dynamic Jumbotron Cover with Glassmorphism Theme */}
-      <div className="relative p-6 md:p-8 rounded-3xl overflow-hidden bg-gradient-to-br from-blue-600 via-indigo-600 to-indigo-800 text-white shadow-xl shadow-indigo-500/10">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.15),transparent_40%)] animate-pulse" />
-        <div className="absolute -right-20 -top-20 w-52 h-52 rounded-full bg-white/10 blur-2xl" />
-        <div className="absolute left-1/3 bottom-0 w-36 h-36 rounded-full bg-blue-500/20 blur-2xl" />
-        
-        <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="space-y-2.5">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 backdrop-blur-md border border-white/10 text-[10px] font-bold text-blue-100 tracking-wide uppercase">
-              <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-spin" style={{ animationDuration: '6s' }} />
-              Dịch vụ Email tạm thời chuyên nghiệp
-            </div>
-            <h1 className="text-2xl md:text-3xl font-black tracking-tight">Hòm Thư Gmail Tạm Thời</h1>
-            <p className="text-xs md:text-sm text-blue-100/90 font-medium max-w-xl leading-relaxed">
-              Tạo nhanh địa chỉ Gmail tạm thời hoặc địa chỉ Email thực tế nhận tin nhắn OTP, mã kích hoạt tài khoản ngay lập tức mà không lo bị lộ danh tính, không sợ spam quảng cáo.
-            </p>
-          </div>
-          
-          <div className="flex flex-col gap-2 bg-white/10 backdrop-blur-md px-4 py-3 rounded-2xl border border-white/10 shrink-0 self-start md:self-center">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-              <div className="text-xs font-bold text-slate-100">
-                Tự động kiểm tra: <span className="font-mono text-emerald-300 text-sm">{countdown}s</span>
-              </div>
-            </div>
-            <p className="text-[10px] text-slate-300 font-medium">Không cần tải lại trang</p>
-          </div>
-        </div>
-      </div>
-
       {/* Main Panel Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         
@@ -664,17 +619,16 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
                     onChange={(e) => setSelectedDomain(e.target.value)}
                     className="w-full px-3 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-indigo-500 min-h-[38px]"
                   >
-                    {availableDomains.map((dom) => (
-                      <option key={dom} value={dom}>
-                        @{dom}
-                      </option>
-                    ))}
+                    {availableDomains.map((dom) => {
+                      const status = domainStatuses.find(s => s.domain === dom);
+                      const isWorking = status ? status.isWorking : true;
+                      return (
+                        <option key={dom} value={dom}>
+                          {isWorking ? "✓ " : "⚠️ "}@{dom}
+                        </option>
+                      );
+                    })}
                   </select>
-                  {selectedDomain && domainStatuses.find(s => s.domain === selectedDomain) && (
-                      <p className={`text-[10px] mt-1 font-bold ${domainStatuses.find(s => s.domain === selectedDomain)?.isWorking ? "text-emerald-600" : "text-rose-600"}`}>
-                          {domainStatuses.find(s => s.domain === selectedDomain)?.isWorking ? "Domain đang hoạt động" : "Cảnh báo: Domain có thể xảy ra lỗi"}
-                      </p>
-                  )}
                 </div>
               ) : (
                 <div />
@@ -715,7 +669,16 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
             )}
           </div>
 
-
+          {/* Automatic Check Status Widget */}
+          <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900/60 border border-slate-200/85 dark:border-slate-800 p-4 rounded-3xl shadow-sm transition-all">
+            <div className="flex items-center gap-2.5">
+              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                Tự động kiểm tra thư mới: <span className="font-mono text-indigo-600 dark:text-indigo-400 text-sm font-black">{countdown}s</span>
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold">Không cần tải lại trang</p>
+          </div>
 
         </div>
 

@@ -557,6 +557,95 @@ export const testHistoryRepo = {
   }
 };
 
+const TEMP_EMAIL_HISTORY_COLLECTION = "temp_email_history";
+export const tempEmailHistoryRepo = {
+  subscribe(userEmail: string, callback: (items: any[]) => void, onError?: (error: any) => void) {
+    const colRef = collection(db, TEMP_EMAIL_HISTORY_COLLECTION);
+    const q = query(
+      colRef, 
+      where("ownerEmail", "==", userEmail.toLowerCase())
+    );
+    return onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      items.sort((a: any, b: any) => {
+        const dateA = a.generatedAt ? new Date(a.generatedAt).getTime() : 0;
+        const dateB = b.generatedAt ? new Date(b.generatedAt).getTime() : 0;
+        return dateB - dateA;
+      });
+      callback(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, TEMP_EMAIL_HISTORY_COLLECTION);
+      if (onError) onError(error);
+    });
+  },
+  async getAll(userEmail: string): Promise<any[]> {
+    try {
+      const colRef = collection(db, TEMP_EMAIL_HISTORY_COLLECTION);
+      const q = query(
+        colRef, 
+        where("ownerEmail", "==", userEmail.toLowerCase())
+      );
+      const snapshot = await getDocs(q);
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      items.sort((a: any, b: any) => {
+        const dateA = a.generatedAt ? new Date(a.generatedAt).getTime() : 0;
+        const dateB = b.generatedAt ? new Date(b.generatedAt).getTime() : 0;
+        return dateB - dateA;
+      });
+      return items;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, TEMP_EMAIL_HISTORY_COLLECTION);
+      return [];
+    }
+  },
+  async create(item: any): Promise<string> {
+    const id = item.email.replace(/[@.]/g, "_");
+    const docRef = doc(db, TEMP_EMAIL_HISTORY_COLLECTION, id);
+    try {
+      await setDoc(docRef, { 
+        ...item, 
+        id,
+        ownerEmail: item.ownerEmail.toLowerCase(),
+        generatedAt: item.generatedAt || new Date().toISOString() 
+      }, { merge: true });
+      return id;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, TEMP_EMAIL_HISTORY_COLLECTION);
+      return "";
+    }
+  },
+  async update(email: string, updates: any): Promise<void> {
+    const id = email.replace(/[@.]/g, "_");
+    const docRef = doc(db, TEMP_EMAIL_HISTORY_COLLECTION, id);
+    try {
+      await updateDoc(docRef, updates);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, TEMP_EMAIL_HISTORY_COLLECTION);
+    }
+  },
+  async delete(email: string): Promise<void> {
+    const id = email.replace(/[@.]/g, "_");
+    const docRef = doc(db, TEMP_EMAIL_HISTORY_COLLECTION, id);
+    try {
+      await deleteDoc(docRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, TEMP_EMAIL_HISTORY_COLLECTION);
+    }
+  },
+  async clearAll(userEmail: string): Promise<void> {
+    try {
+      const colRef = collection(db, TEMP_EMAIL_HISTORY_COLLECTION);
+      const q = query(colRef, where("ownerEmail", "==", userEmail.toLowerCase()));
+      const snapshot = await getDocs(q);
+      const batch = writeBatch(db);
+      snapshot.docs.forEach(doc => batch.delete(doc.ref));
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, TEMP_EMAIL_HISTORY_COLLECTION);
+    }
+  }
+};
+
 const ERROR_LOGS_COLLECTION = "error_logs";
 export const errorLogsRepo = {
   subscribe(callback: (items: any[]) => void, onError?: (error: any) => void) {

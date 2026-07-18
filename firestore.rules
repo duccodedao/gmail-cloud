@@ -96,5 +96,17 @@ service cloud.firestore {
       allow create: if isSignedIn();
       allow read, delete: if isAdmin();
     }
+
+    // Rules for Test History
+    match /test_history/{historyId} {
+      allow read, create: if isAdmin();
+    }
+
+    // Rules for Temp Email History
+    match /temp_email_history/{historyId} {
+      allow read, delete: if isSignedIn() && (resource.data.ownerEmail == request.auth.token.email.lower() || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.ownerEmail == request.auth.token.email.lower();
+      allow update: if isSignedIn() && (resource.data.ownerEmail == request.auth.token.email.lower() && request.resource.data.ownerEmail == request.auth.token.email.lower() || isAdmin());
+    }
   }
 }

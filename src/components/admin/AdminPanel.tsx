@@ -77,7 +77,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       // Start polling
       const startTime = Date.now();
       const interval = setInterval(async () => {
-        if (Date.now() - startTime > 120000) {
+        if (Date.now() - startTime > 180000) {
             clearInterval(interval);
             clearInterval(durationInterval);
             setIsTesting(false);
