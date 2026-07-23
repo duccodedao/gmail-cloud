@@ -142,7 +142,7 @@ export async function fetchMessages(info: GeneratedEmailInfo): Promise<TempEmail
     return messages.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   } catch (error) {
     console.error("Error fetching messages", error);
-    return []; // Return empty to prevent UI crash
+    throw error;
   }
 }
 

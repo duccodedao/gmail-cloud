@@ -7,9 +7,69 @@ const INBOXES_API_PRIMARY = "https://inboxes.com/api/v2";
 const INBOXES_API_SECONDARY = "https://api.inboxes.com/v2";
 const MAILTM_API = "https://api.mail.tm";
 
+const INBOXES_DOMAINS = [
+  "blondmail.com", "chapsmail.com", "clowmail.com", "dropjar.com", 
+  "fivermail.com", "getairmail.com", "getmule.com", "getnada.com", 
+  "gimpmail.com", "givmail.com", "guysmail.com", "inboxbear.com", 
+  "replyloop.com", "robot-mail.com", "tafmail.com", "temptami.com", 
+  "tupmail.com", "vomoto.com"
+];
+
 // Cached domains to provide even if APIs fail
 let cachedInboxesDomains: any[] = [];
 let cachedMailtmDomains: any[] = [];
+
+// Memory cache for Mail.tm JWT tokens to dramatically reduce API rate limits
+const mailtmTokenCache = new Map<string, { token: string; savedAt: number }>();
+
+async function getMailtmToken(email: string): Promise<string | null> {
+  const cached = mailtmTokenCache.get(email);
+  const now = Date.now();
+  // Cache token for 30 minutes to stay extremely safe from expiry
+  if (cached && now - cached.savedAt < 30 * 60 * 1000) {
+    console.log(`[Proxy] Using cached Mail.tm token for ${email}`);
+    return cached.token;
+  }
+
+  const password = "TempPass123!@#";
+  try {
+    // 1. Try to get token
+    let tokenRes = await fetchWithRetry(`${MAILTM_API}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: email, password })
+    });
+
+    // 2. If token failed (account might not exist), create it
+    if (!tokenRes || !tokenRes.ok) {
+      console.log(`[Proxy] Token fetch failed for ${email} (${tokenRes?.status || "no response"}), trying to create account...`);
+      const createRes = await fetchWithRetry(`${MAILTM_API}/accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: email, password })
+      });
+      
+      if (createRes && (createRes.ok || createRes.status === 400 || createRes.status === 422)) {
+        tokenRes = await fetchWithRetry(`${MAILTM_API}/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address: email, password })
+        });
+      }
+    }
+
+    if (tokenRes && tokenRes.ok) {
+      const { token } = await tokenRes.json();
+      mailtmTokenCache.set(email, { token, savedAt: now });
+      return token;
+    } else {
+      console.error(`[Proxy] Failed to obtain Mail.tm token for ${email} with status: ${tokenRes?.status}`);
+    }
+  } catch (error) {
+    console.error(`[Proxy] Exception obtaining Mail.tm token for ${email}:`, error);
+  }
+  return null;
+}
 
 async function fetchWithRetry(url: string, options: RequestInit = {}) {
   let retries = 2;
@@ -72,8 +132,8 @@ async function fetchWithRetry(url: string, options: RequestInit = {}) {
 async function fetchFromInboxes(path: string, options: RequestInit = {}) {
   try {
     const res = await fetchWithRetry(`${INBOXES_API_PRIMARY}${path}`, options);
-    if (res.ok) return res;
-    throw new Error(`Primary failed with ${res.status}`);
+    if (res && res.ok) return res;
+    throw new Error(`Primary failed with ${res ? res.status : 'no response'}`);
   } catch (error) {
     return await fetchWithRetry(`${INBOXES_API_SECONDARY}${path}`, options);
   }
@@ -104,16 +164,19 @@ async function startServer() {
           const formatted = data.domains.map((d: any) => ({ ...d, provider: 'inboxes' }));
           cachedInboxesDomains = formatted;
           allDomains = [...allDomains, ...formatted];
+        } else {
+          throw new Error("No domains found in Inboxes payload");
         }
+      } else {
+        throw new Error(`Inboxes returned non-OK status: ${response?.status}`);
       }
     } catch (error) {
-      console.error("Failed to fetch Inboxes domains", error);
+      console.error("Failed to fetch Inboxes domains dynamically", error);
       if (cachedInboxesDomains.length > 0) {
         allDomains = [...allDomains, ...cachedInboxesDomains];
       } else {
         // Hardcoded fallback domains for Inboxes
-        const fallbacks = ["getnada.com", "dropjar.com", "inboxbear.com", "robot-mail.com", "tafmail.com", "tupmail.com", "vomoto.com"]
-          .map(d => ({ qdn: d, provider: 'inboxes' }));
+        const fallbacks = INBOXES_DOMAINS.map(d => ({ qdn: d, provider: 'inboxes' }));
         allDomains = [...allDomains, ...fallbacks];
       }
     }
@@ -154,44 +217,19 @@ async function startServer() {
     let mailtmResults: any[] = [];
     let mailtmError = "";
 
-    // Check if it's a Mail.tm domain
-    const isMailtm = cachedMailtmDomains.some(d => d.qdn === domain) || domain === 'web-library.net';
+    // Check if it's a Mail.tm domain vs Inboxes domain
+    const isInboxes = INBOXES_DOMAINS.includes(domain) || cachedInboxesDomains.some(d => d.qdn === domain);
+    const isMailtm = !isInboxes;
     
     if (isMailtm) {
       try {
-        const password = "TempPass123!@#";
-        
-        // 1. Try to get token
-        let tokenRes = await fetchWithRetry(`${MAILTM_API}/token`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address: email, password })
-        });
-
-        // 2. If token failed (account might not exist), create it
-        if (!tokenRes.ok) {
-          const createRes = await fetchWithRetry(`${MAILTM_API}/accounts`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ address: email, password })
-          });
-          
-          if (createRes.ok || createRes.status === 400) {
-            tokenRes = await fetchWithRetry(`${MAILTM_API}/token`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ address: email, password })
-            });
-          }
-        }
-
-        if (tokenRes.ok) {
-          const { token } = await tokenRes.json();
+        const token = await getMailtmToken(email);
+        if (token) {
           const msgsRes = await fetchWithRetry(`${MAILTM_API}/messages`, {
             headers: { 'Authorization': `Bearer ${token}` }
           });
           
-          if (msgsRes.ok) {
+          if (msgsRes && msgsRes.ok) {
             const data = await msgsRes.json();
             mailtmResults = (data['hydra:member'] || []).map((m: any) => ({
               uid: m.id,
@@ -202,10 +240,10 @@ async function startServer() {
             }));
             return res.json({ msgs: mailtmResults });
           } else {
-            mailtmError = `Messages fetch failed: ${msgsRes.status}`;
+            mailtmError = `Messages fetch failed with status: ${msgsRes?.status}`;
           }
         } else {
-          mailtmError = `Auth failed: ${tokenRes.status}`;
+          mailtmError = "Failed to fetch or authenticate Mail.tm account token";
         }
       } catch (error) {
         console.error("Mail.tm inbox failed", error);
@@ -264,20 +302,13 @@ async function startServer() {
     // 2. Try Mail.tm if we have email to re-auth
     if (email) {
       try {
-        const password = "TempPass123!@#";
-        let tokenRes = await fetchWithRetry(`${MAILTM_API}/token`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address: email, password })
-        });
-
-        if (tokenRes.ok) {
-          const { token } = await tokenRes.json();
+        const token = await getMailtmToken(email);
+        if (token) {
           const msgRes = await fetchWithRetry(`${MAILTM_API}/messages/${id}`, {
             headers: { 'Authorization': `Bearer ${token}` }
           });
           
-          if (msgRes.ok) {
+          if (msgRes && msgRes.ok) {
             const m = await msgRes.json();
             return res.json({
               uid: m.id,
