@@ -139,16 +139,18 @@ async function fetchFromInboxes(path: string, options: RequestInit = {}) {
   }
 }
 
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", time: new Date().toISOString() });
+});
+
+export { app };
+
 async function startServer() {
-  const app = express();
   const PORT = 3000;
-
-  app.use(cors());
-  app.use(express.json());
-
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", time: new Date().toISOString() });
-  });
 
   // Proxy for domains
   app.get("/api/tempmail/domains", async (req, res) => {
@@ -361,4 +363,6 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
