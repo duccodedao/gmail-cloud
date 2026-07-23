@@ -16,13 +16,26 @@
     <meta property="og:description" content="Hệ thống email tạm thời thông minh với khả năng tự động trích xuất mã OTP." />
     <meta property="og:image" content="/src/assets/images/gmail_cloud_logo_1784250361796.jpg" />
 
-    <!-- Favicon -->
+    <!-- Favicon & PWA -->
     <link rel="icon" type="image/jpeg" href="/src/assets/images/gmail_cloud_logo_1784250361796.jpg" />
     <link rel="apple-touch-icon" href="/src/assets/images/gmail_cloud_logo_1784250361796.jpg" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#4f46e5" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then((reg) => console.log('Service Worker registered successfully:', reg.scope))
+            .catch((err) => console.error('Service Worker registration failed:', err));
+        });
+      }
+    </script>
   </body>
 </html>
 

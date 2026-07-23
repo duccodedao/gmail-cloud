@@ -14,7 +14,8 @@ import {
   LogOut,
   Ticket,
   Copy,
-  Check
+  Check,
+  Smartphone
 } from "lucide-react";
 import { Theme } from "../types";
 
@@ -29,6 +30,8 @@ interface SidebarProps {
   totalAccounts: number;
   onLogout: () => void;
   isAdmin: boolean;
+  isInstallable?: boolean;
+  onInstallPWA?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -41,9 +44,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   setSidebarOpen,
   totalAccounts,
   onLogout,
-  isAdmin
+  isAdmin,
+  isInstallable = false,
+  onInstallPWA
 }) => {
   const [promoCopied, setPromoCopied] = React.useState(false);
+
+  // Check PWA and device context
+  const isIOS = typeof window !== "undefined" && /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+  const isStandalone = typeof window !== "undefined" && (window.matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone);
 
   const menuItems = isAdmin ? [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -140,6 +149,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
             );
           })}
         </nav>
+
+        {/* PWA Installation block */}
+        {(isInstallable || (isIOS && !isStandalone)) && (
+          <div className="px-5 py-3.5 mx-4 mb-3.5 rounded-2xl bg-indigo-500/5 dark:bg-indigo-500/10 border border-indigo-500/10 dark:border-indigo-500/25 flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <Smartphone className="w-4.5 h-4.5 text-indigo-500 dark:text-indigo-400" />
+              <span className="text-xs font-bold text-slate-800 dark:text-slate-200">Cài đặt Ứng dụng</span>
+            </div>
+            
+            {isInstallable && onInstallPWA && (
+              <>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium leading-relaxed">
+                  Cài đặt Gmail Cloud trực tiếp lên thiết bị để nhận thông báo tức thời và truy cập nhanh hơn.
+                </p>
+                <button
+                  onClick={onInstallPWA}
+                  className="w-full py-2 px-3 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition-all shadow-sm shadow-indigo-500/20 hover:shadow-indigo-500/30 active:scale-[0.98] cursor-pointer"
+                >
+                  Cài đặt ngay (PWA)
+                </button>
+              </>
+            )}
+
+            {isIOS && !isStandalone && (
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium leading-relaxed">
+                Để cài đặt trên iOS: nhấn nút <span className="font-bold text-indigo-500">Chia sẻ (Share)</span> trên Safari, sau đó chọn <span className="font-bold text-indigo-500">Thêm vào MH chính (Add to Home Screen)</span>.
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Promo Code Card */}
         <div className="px-5 py-4 mx-4 mb-3.5 rounded-2xl bg-blue-500/5 dark:bg-blue-500/10 border border-blue-500/10 dark:border-blue-500/25 flex flex-col gap-2.5">

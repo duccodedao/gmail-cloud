@@ -1,0 +1,37 @@
+{
+  "name": "Gmail Cloud - Hệ thống Quản lý Email & OTP Tự động",
+  "short_name": "Gmail Cloud",
+  "description": "Giải pháp email tạm thời thông minh, tự động phát hiện mã OTP từ Unich và các dịch vụ khác.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#4f46e5",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.jpg",
+      "sizes": "178x178",
+      "type": "image/jpeg"
+    },
+    {
+      "src": "/icon-192.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["utilities", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Hòm thư tạm thời",
+      "url": "/",
+      "description": "Tạo hòm thư tạm thời mới và nhận OTP"
+    }
+  ]
+}

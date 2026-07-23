@@ -73,6 +73,21 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
     note?: string;
   }>>([]);
   const [otpMap, setOtpMap] = useState<Record<string, string>>({});
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
+    typeof window !== "undefined" && "Notification" in window ? Notification.permission : "default"
+  );
+
+  // Request Notification permission on mount
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().then((permission) => {
+        setNotificationPermission(permission);
+        if (permission === "granted") {
+          addToast("Đã kích hoạt quyền nhận thông báo đẩy khi có thư mới!", "success");
+        }
+      });
+    }
+  }, [addToast]);
 
 
 
@@ -256,16 +271,65 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
         const newCount = newMessages.length;
         addToast(`Nhận thành công ${newCount} thư mới!`, "success");
         
-        // Auto-extract OTP for new messages
+        // Auto-extract OTP and fire push notifications for new messages
         newMessages.forEach(async (msg) => {
           try {
             const details = await fetchMessageDetails(emailInfo, msg.id, false);
-            const otp = extractOTP(details.textBody || details.body || "", details.from, details.subject);
+            const bodyText = details.textBody || details.body || "";
+            const otp = extractOTP(bodyText, details.from, details.subject) || "";
             if (otp) {
               setOtpMap(prev => ({ ...prev, [msg.id]: otp }));
             }
+
+            const isUnich = 
+              (msg.senderName && msg.senderName.toLowerCase().includes("unich")) ||
+              (msg.from && msg.from.toLowerCase().includes("unich")) ||
+              (msg.subject && msg.subject.toLowerCase().includes("unich")) ||
+              (bodyText.toLowerCase().includes("unich"));
+
+            if ("Notification" in window && Notification.permission === "granted") {
+              const senderName = msg.senderName || msg.from.split("<")[0].trim() || "Người gửi";
+              
+              if (isUnich) {
+                // Đối với Unich chỉ hiển thị Tên, và OTP
+                new Notification("Unich OTP", {
+                  body: `Tên: ${senderName}\nOTP: ${otp || "Không tìm thấy mã OTP"}`,
+                  icon: "/favicon.ico",
+                  tag: `msg-${msg.id}`
+                });
+              } else {
+                // Thư bình thường
+                new Notification(`Thư mới từ ${senderName}`, {
+                  body: `Tiêu đề: ${msg.subject}`,
+                  icon: "/favicon.ico",
+                  tag: `msg-${msg.id}`
+                });
+              }
+            }
           } catch (e) {
-            console.error("Failed to auto-extract OTP", e);
+            console.error("Failed to auto-extract OTP / notify", e);
+            // Fallback notification if message details could not be loaded
+            if ("Notification" in window && Notification.permission === "granted") {
+              const senderName = msg.senderName || msg.from.split("<")[0].trim() || "Người gửi";
+              const isUnichFallback = 
+                (msg.senderName && msg.senderName.toLowerCase().includes("unich")) ||
+                (msg.from && msg.from.toLowerCase().includes("unich")) ||
+                (msg.subject && msg.subject.toLowerCase().includes("unich"));
+              
+              if (isUnichFallback) {
+                new Notification("Unich OTP", {
+                  body: `Tên: ${senderName}\nOTP: [Đang tải...]`,
+                  icon: "/favicon.ico",
+                  tag: `msg-${msg.id}`
+                });
+              } else {
+                new Notification(`Thư mới từ ${senderName}`, {
+                  body: `Tiêu đề: ${msg.subject}`,
+                  icon: "/favicon.ico",
+                  tag: `msg-${msg.id}`
+                });
+              }
+            }
           }
         });
         
@@ -669,15 +733,65 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
             )}
           </div>
 
-          {/* Automatic Check Status Widget */}
-          <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900/60 border border-slate-200/85 dark:border-slate-800 p-4 rounded-3xl shadow-sm transition-all">
-            <div className="flex items-center gap-2.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
-              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                Tự động kiểm tra thư mới: <span className="font-mono text-indigo-600 dark:text-indigo-400 text-sm font-black">{countdown}s</span>
-              </span>
+          {/* Automatic Check Status & Notification status Widget */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900/60 border border-slate-200/85 dark:border-slate-800 p-4 rounded-3xl shadow-sm transition-all">
+              <div className="flex items-center gap-2.5">
+                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Tự động kiểm tra thư mới: <span className="font-mono text-indigo-600 dark:text-indigo-400 text-sm font-black">{countdown}s</span>
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold">Không cần tải lại trang</p>
             </div>
-            <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold">Không cần tải lại trang</p>
+
+            {/* Notification Permission Request Block */}
+            {"Notification" in window && (
+              <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900/60 border border-slate-200/85 dark:border-slate-800 p-4 rounded-3xl shadow-sm transition-all">
+                <div className="flex items-center gap-2.5">
+                  <div className={`w-2.5 h-2.5 rounded-full ${
+                    notificationPermission === "granted" 
+                      ? "bg-emerald-500" 
+                      : notificationPermission === "denied"
+                        ? "bg-rose-500"
+                        : "bg-amber-500 animate-pulse"
+                  }`} />
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Thông báo đẩy:{" "}
+                    <span className={`font-extrabold ${
+                      notificationPermission === "granted" 
+                        ? "text-emerald-600 dark:text-emerald-400" 
+                        : notificationPermission === "denied"
+                          ? "text-rose-600 dark:text-rose-400"
+                          : "text-amber-600 dark:text-amber-400"
+                    }`}>
+                      {notificationPermission === "granted" 
+                        ? "Đã kích hoạt" 
+                        : notificationPermission === "denied"
+                          ? "Bị chặn"
+                          : "Chưa thiết lập"}
+                    </span>
+                  </span>
+                </div>
+                {notificationPermission !== "granted" && (
+                  <button
+                    onClick={() => {
+                      Notification.requestPermission().then((permission) => {
+                        setNotificationPermission(permission);
+                        if (permission === "granted") {
+                          addToast("Đã kích hoạt thông báo đẩy hệ thống!", "success");
+                        } else if (permission === "denied") {
+                          addToast("Bạn đã chặn thông báo đẩy. Hãy mở cài đặt trình duyệt để cho phép.", "warning");
+                        }
+                      });
+                    }}
+                    className="px-2.5 py-1.5 text-[10px] font-extrabold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition-all cursor-pointer shadow-sm shadow-indigo-500/10 active:scale-95"
+                  >
+                    Bật thông báo
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
         </div>

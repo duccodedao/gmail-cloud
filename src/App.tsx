@@ -120,6 +120,39 @@ export default function App() {
     localStorage.setItem("gmail_cloud_theme", theme);
   }, [theme]);
 
+  // PWA Install Prompt State & Event Listener
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isPwaInstallable, setIsPwaInstallable] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsPwaInstallable(true);
+    };
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallPWA = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    try {
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === "accepted") {
+        addToast("Cài đặt Gmail Cloud thành công!", "success");
+      }
+    } catch (err) {
+      console.error("PWA Installation failed", err);
+    }
+    setDeferredPrompt(null);
+    setIsPwaInstallable(false);
+  };
+
   // Auth and Profile Subscription Effect
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
@@ -779,6 +812,8 @@ export default function App() {
         totalAccounts={accounts.length}
         onLogout={handleLogout}
         isAdmin={isAdmin()}
+        isInstallable={isPwaInstallable}
+        onInstallPWA={handleInstallPWA}
       />
 
       {/* 2. MAIN APPLICATION CONTENT VIEWPORTS */}
