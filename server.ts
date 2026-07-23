@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import cors from "cors";
 
 const INBOXES_API_PRIMARY = "https://inboxes.com/api/v2";
@@ -147,204 +146,205 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", time: new Date().toISOString() });
 });
 
+// Proxy for domains
+app.get("/api/tempmail/domains", async (req, res) => {
+  console.log("GET /api/tempmail/domains request received");
+  let allDomains: any[] = [];
+  
+  // Try Inboxes.com
+  try {
+    const response = await fetchFromInboxes("/domain");
+    if (response && response.ok) {
+      const data = await response.json();
+      if (data.domains) {
+        const formatted = data.domains.map((d: any) => ({ ...d, provider: 'inboxes' }));
+        cachedInboxesDomains = formatted;
+        allDomains = [...allDomains, ...formatted];
+      } else {
+        throw new Error("No domains found in Inboxes payload");
+      }
+    } else {
+      throw new Error(`Inboxes returned non-OK status: ${response?.status}`);
+    }
+  } catch (error) {
+    console.error("Failed to fetch Inboxes domains dynamically", error);
+    if (cachedInboxesDomains.length > 0) {
+      allDomains = [...allDomains, ...cachedInboxesDomains];
+    } else {
+      // Hardcoded fallback domains for Inboxes
+      const fallbacks = INBOXES_DOMAINS.map(d => ({ qdn: d, provider: 'inboxes' }));
+      allDomains = [...allDomains, ...fallbacks];
+    }
+  }
+
+  // Try Mail.tm
+  try {
+    const response = await fetchWithRetry(`${MAILTM_API}/domains`);
+    if (response && response.ok) {
+      const data = await response.json();
+      const domains = data['hydra:member'] || [];
+      const formatted = domains.map((d: any) => ({ qdn: d.domain, provider: 'mailtm' }));
+      cachedMailtmDomains = formatted;
+      allDomains = [...allDomains, ...formatted];
+    }
+  } catch (error) {
+    console.error("Failed to fetch Mail.tm domains", error);
+    if (cachedMailtmDomains.length > 0) {
+      allDomains = [...allDomains, ...cachedMailtmDomains];
+    }
+  }
+
+  // Remove duplicates
+  const unique = Array.from(new Map(allDomains.map(item => [item.qdn, item])).values());
+  res.json({ domains: unique });
+});
+
+// Proxy for inbox
+app.get("/api/tempmail/inbox/:email", async (req, res) => {
+  const email = req.params.email;
+  const domain = email.split('@')[1];
+  
+  if (!domain) {
+    return res.status(400).json({ error: "Invalid email format" });
+  }
+  
+  console.log(`Fetching inbox for: ${email} (Domain: ${domain})`);
+
+  let mailtmResults: any[] = [];
+  let mailtmError = "";
+
+  // Check if it's a Mail.tm domain vs Inboxes domain
+  const isInboxes = INBOXES_DOMAINS.includes(domain) || cachedInboxesDomains.some(d => d.qdn === domain);
+  const isMailtm = !isInboxes;
+  
+  if (isMailtm) {
+    try {
+      const token = await getMailtmToken(email);
+      if (token) {
+        const msgsRes = await fetchWithRetry(`${MAILTM_API}/messages`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (msgsRes && msgsRes.ok) {
+          const data = await msgsRes.json();
+          mailtmResults = (data['hydra:member'] || []).map((m: any) => ({
+            uid: m.id,
+            f: m.from.address,
+            s: m.subject,
+            cr: m.createdAt,
+            provider: 'mailtm'
+          }));
+          return res.json({ msgs: mailtmResults });
+        } else {
+          mailtmError = `Messages fetch failed with status: ${msgsRes?.status}`;
+        }
+      } else {
+        mailtmError = "Failed to fetch or authenticate Mail.tm account token";
+      }
+    } catch (error) {
+      console.error("Mail.tm inbox failed", error);
+      mailtmError = error instanceof Error ? error.message : String(error);
+    }
+    
+    return res.status(500).json({
+      error: "Failed to fetch Mail.tm inbox",
+      details: mailtmError
+    });
+  }
+
+  // Default to Inboxes.com
+  try {
+    const response = await fetchFromInboxes(`/inbox/${encodeURIComponent(email)}`);
+    if (response && response.ok) {
+      const data = await response.json();
+      return res.json(data);
+    }
+    
+    const errorText = response ? await response.text() : "No response";
+    console.error(`Inboxes.com failed: ${response?.status} - ${errorText}`);
+    
+    // If we are here, it means both failed or Inboxes failed for a non-Mailtm domain
+    res.status(500).json({ 
+      error: "Failed to fetch inbox from all providers",
+      details: {
+        isMailtm,
+        mailtmError,
+        inboxesStatus: response?.status
+      }
+    });
+  } catch (error) {
+    console.error("Inboxes fetch error:", error);
+    res.status(500).json({ 
+      error: "Critical failure in proxy server",
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+// Proxy for message details
+app.get("/api/tempmail/message/:id", async (req, res) => {
+  const id = req.params.id;
+  const email = req.query.email as string;
+  
+  // 1. Try Inboxes.com
+  try {
+    const response = await fetchFromInboxes(`/message/${id}`);
+    if (response && response.ok) {
+      const data = await response.json();
+      return res.json(data);
+    }
+  } catch (error) {}
+
+  // 2. Try Mail.tm if we have email to re-auth
+  if (email) {
+    try {
+      const token = await getMailtmToken(email);
+      if (token) {
+        const msgRes = await fetchWithRetry(`${MAILTM_API}/messages/${id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (msgRes && msgRes.ok) {
+          const m = await msgRes.json();
+          return res.json({
+            uid: m.id,
+            f: m.from.address,
+            s: m.subject,
+            cr: m.createdAt,
+            html: m.html ? m.html[0] : "",
+            text: m.text,
+            provider: 'mailtm'
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Mail.tm message details failed", error);
+    }
+  }
+  
+  res.status(404).json({ error: "Message not found" });
+});
+
+// Proxy for deleting message
+app.delete("/api/tempmail/message/:id", async (req, res) => {
+  try {
+    const response = await fetchFromInboxes(`/message/${req.params.id}`, {
+      method: 'DELETE'
+    });
+    res.json({ success: response?.ok || false });
+  } catch (error) {
+    res.json({ success: false });
+  }
+});
+
 export { app };
 
 async function startServer() {
   const PORT = 3000;
 
-  // Proxy for domains
-  app.get("/api/tempmail/domains", async (req, res) => {
-    console.log("GET /api/tempmail/domains request received");
-    let allDomains: any[] = [];
-    
-    // Try Inboxes.com
-    try {
-      const response = await fetchFromInboxes("/domain");
-      if (response && response.ok) {
-        const data = await response.json();
-        if (data.domains) {
-          const formatted = data.domains.map((d: any) => ({ ...d, provider: 'inboxes' }));
-          cachedInboxesDomains = formatted;
-          allDomains = [...allDomains, ...formatted];
-        } else {
-          throw new Error("No domains found in Inboxes payload");
-        }
-      } else {
-        throw new Error(`Inboxes returned non-OK status: ${response?.status}`);
-      }
-    } catch (error) {
-      console.error("Failed to fetch Inboxes domains dynamically", error);
-      if (cachedInboxesDomains.length > 0) {
-        allDomains = [...allDomains, ...cachedInboxesDomains];
-      } else {
-        // Hardcoded fallback domains for Inboxes
-        const fallbacks = INBOXES_DOMAINS.map(d => ({ qdn: d, provider: 'inboxes' }));
-        allDomains = [...allDomains, ...fallbacks];
-      }
-    }
-
-    // Try Mail.tm
-    try {
-      const response = await fetchWithRetry(`${MAILTM_API}/domains`);
-      if (response && response.ok) {
-        const data = await response.json();
-        const domains = data['hydra:member'] || [];
-        const formatted = domains.map((d: any) => ({ qdn: d.domain, provider: 'mailtm' }));
-        cachedMailtmDomains = formatted;
-        allDomains = [...allDomains, ...formatted];
-      }
-    } catch (error) {
-      console.error("Failed to fetch Mail.tm domains", error);
-      if (cachedMailtmDomains.length > 0) {
-        allDomains = [...allDomains, ...cachedMailtmDomains];
-      }
-    }
-
-    // Remove duplicates
-    const unique = Array.from(new Map(allDomains.map(item => [item.qdn, item])).values());
-    res.json({ domains: unique });
-  });
-
-  // Proxy for inbox
-  app.get("/api/tempmail/inbox/:email", async (req, res) => {
-    const email = req.params.email;
-    const domain = email.split('@')[1];
-    
-    if (!domain) {
-      return res.status(400).json({ error: "Invalid email format" });
-    }
-    
-    console.log(`Fetching inbox for: ${email} (Domain: ${domain})`);
-
-    let mailtmResults: any[] = [];
-    let mailtmError = "";
-
-    // Check if it's a Mail.tm domain vs Inboxes domain
-    const isInboxes = INBOXES_DOMAINS.includes(domain) || cachedInboxesDomains.some(d => d.qdn === domain);
-    const isMailtm = !isInboxes;
-    
-    if (isMailtm) {
-      try {
-        const token = await getMailtmToken(email);
-        if (token) {
-          const msgsRes = await fetchWithRetry(`${MAILTM_API}/messages`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          
-          if (msgsRes && msgsRes.ok) {
-            const data = await msgsRes.json();
-            mailtmResults = (data['hydra:member'] || []).map((m: any) => ({
-              uid: m.id,
-              f: m.from.address,
-              s: m.subject,
-              cr: m.createdAt,
-              provider: 'mailtm'
-            }));
-            return res.json({ msgs: mailtmResults });
-          } else {
-            mailtmError = `Messages fetch failed with status: ${msgsRes?.status}`;
-          }
-        } else {
-          mailtmError = "Failed to fetch or authenticate Mail.tm account token";
-        }
-      } catch (error) {
-        console.error("Mail.tm inbox failed", error);
-        mailtmError = error instanceof Error ? error.message : String(error);
-      }
-      
-      return res.status(500).json({
-        error: "Failed to fetch Mail.tm inbox",
-        details: mailtmError
-      });
-    }
-
-    // Default to Inboxes.com
-    try {
-      const response = await fetchFromInboxes(`/inbox/${encodeURIComponent(email)}`);
-      if (response && response.ok) {
-        const data = await response.json();
-        return res.json(data);
-      }
-      
-      const errorText = response ? await response.text() : "No response";
-      console.error(`Inboxes.com failed: ${response?.status} - ${errorText}`);
-      
-      // If we are here, it means both failed or Inboxes failed for a non-Mailtm domain
-      res.status(500).json({ 
-        error: "Failed to fetch inbox from all providers",
-        details: {
-          isMailtm,
-          mailtmError,
-          inboxesStatus: response?.status
-        }
-      });
-    } catch (error) {
-      console.error("Inboxes fetch error:", error);
-      res.status(500).json({ 
-        error: "Critical failure in proxy server",
-        message: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
-
-  // Proxy for message details
-  app.get("/api/tempmail/message/:id", async (req, res) => {
-    const id = req.params.id;
-    const email = req.query.email as string;
-    
-    // 1. Try Inboxes.com
-    try {
-      const response = await fetchFromInboxes(`/message/${id}`);
-      if (response && response.ok) {
-        const data = await response.json();
-        return res.json(data);
-      }
-    } catch (error) {}
-
-    // 2. Try Mail.tm if we have email to re-auth
-    if (email) {
-      try {
-        const token = await getMailtmToken(email);
-        if (token) {
-          const msgRes = await fetchWithRetry(`${MAILTM_API}/messages/${id}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          
-          if (msgRes && msgRes.ok) {
-            const m = await msgRes.json();
-            return res.json({
-              uid: m.id,
-              f: m.from.address,
-              s: m.subject,
-              cr: m.createdAt,
-              html: m.html ? m.html[0] : "",
-              text: m.text,
-              provider: 'mailtm'
-            });
-          }
-        }
-      } catch (error) {
-        console.error("Mail.tm message details failed", error);
-      }
-    }
-    
-    res.status(404).json({ error: "Message not found" });
-  });
-
-  // Proxy for deleting message
-  app.delete("/api/tempmail/message/:id", async (req, res) => {
-    try {
-      const response = await fetchFromInboxes(`/message/${req.params.id}`, {
-        method: 'DELETE'
-      });
-      res.json({ success: response?.ok || false });
-    } catch (error) {
-      res.json({ success: false });
-    }
-  });
-
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
