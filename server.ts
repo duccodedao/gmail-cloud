@@ -211,6 +211,11 @@ async function startServer() {
         console.error("Mail.tm inbox failed", error);
         mailtmError = error instanceof Error ? error.message : String(error);
       }
+      
+      return res.status(500).json({
+        error: "Failed to fetch Mail.tm inbox",
+        details: mailtmError
+      });
     }
 
     // Default to Inboxes.com

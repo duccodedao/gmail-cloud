@@ -68,61 +68,71 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     try {
       const domains = await getAvailableDomains();
       const now = Date.now();
-      const newTestEmails = await Promise.all(domains.map(async (domain) => {
-        const info = await generateTempEmail("real", undefined, domain);
-        return { email: info, status: "Đang kiểm tra" as const, createdAt: new Date().toISOString(), startTime: now };
-      }));
+      const newTestEmails = domains.map((domain) => {
+        const info: GeneratedEmailInfo = {
+          email: `test_conn_${Math.random().toString(36).substring(2, 8)}@${domain}`,
+          login: "test_conn",
+          domain,
+          mode: "real"
+        };
+        return { 
+          email: info, 
+          status: "Đang kiểm tra" as "Đang kiểm tra" | "Hợp lệ" | "Hỏng", 
+          createdAt: new Date().toISOString(), 
+          startTime: now 
+        };
+      });
       setTestEmails(newTestEmails);
 
-      // Start polling
-      const startTime = Date.now();
-      const interval = setInterval(async () => {
-        if (Date.now() - startTime > 180000) {
-            clearInterval(interval);
-            clearInterval(durationInterval);
-            setIsTesting(false);
-            
-            // Final update and save to history
-            const finalResults = testEmails.map(item => item.status === "Đang kiểm tra" ? {...item, status: "Hỏng"} : item);
-            setTestEmails(finalResults);
-            finalResults.forEach(async (res) => {
-                await testHistoryRepo.create({ domain: res.email.domain, status: res.status });
-            });
-            return;
+      // Run sequential checks to avoid rate limiting
+      const results = [...newTestEmails];
+      for (let i = 0; i < results.length; i++) {
+        const item = results[i];
+        try {
+          // A small delay between domain checks (e.g. 300ms)
+          if (i > 0) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+          
+          const messages = await fetchMessages(item.email);
+          // If the API request succeeded, then the domain is fully working/healthy (even if inbox is empty)!
+          if (Array.isArray(messages)) {
+            item.status = "Hợp lệ";
+          } else {
+            item.status = "Hỏng";
+          }
+        } catch (e) {
+          console.error("Error testing domain", item.email.domain, e);
+          item.status = "Hỏng";
         }
 
-        // Check messages for each email
-        setTestEmails(prev => prev.map(item => {
-            if (item.status !== "Đang kiểm tra") return item;
-            if (Date.now() - item.startTime > 60000) {
-                return { ...item, status: "Hỏng" };
-            }
-            return item;
-        }));
-
-        for (const item of newTestEmails) {
-            // Check if already valid
-            const currentItem = testEmails.find(i => i.email.email === item.email.email);
-            if (currentItem && currentItem.status === "Hợp lệ") continue;
-            if (currentItem && currentItem.status === "Hỏng") continue;
-            
-            try {
-                const messages = await fetchMessages(item.email);
-                if (messages.length > 0) {
-                    setTestEmails(prev => prev.map(i => i.email.email === item.email.email ? {...i, status: "Hợp lệ"} : i));
-                }
-            } catch (e) {
-                console.error("Error fetching messages for", item.email.email, e);
-            }
-            // Small delay to avoid rate limiting
-            await new Promise(resolve => setTimeout(resolve, 5000));
+        // Update state progressively so user sees progress
+        setTestEmails([...results]);
+        
+        // Auto update domain status in Firestore so user doesn't have to manually click
+        try {
+          await domainStatusRepo.setStatus(item.email.domain, item.status === "Hợp lệ");
+        } catch (dbErr) {
+          console.error("Failed to auto-save domain status", dbErr);
         }
-      }, 30000); // Check every 30s
+      }
+
+      // Record test history
+      for (const res of results) {
+        try {
+          await testHistoryRepo.create({ domain: res.email.domain, status: res.status });
+        } catch (dbErr) {
+          console.error("Failed to create test history", dbErr);
+        }
+      }
+
+      addToast("Đã hoàn thành kiểm tra hệ thống và cập nhật trạng thái domain!", "success");
 
     } catch (err) {
-      clearInterval(durationInterval);
       console.error(err);
       addToast("Lỗi khi kiểm tra domain", "error");
+    } finally {
+      clearInterval(durationInterval);
       setIsTesting(false);
     }
   };
