@@ -4,6 +4,7 @@ import {
   getFirestore, 
   collection, 
   doc, 
+  getDoc,
   getDocs, 
   setDoc, 
   deleteDoc, 
@@ -77,6 +78,21 @@ interface FirestoreErrorInfo {
   }
 }
 
+export function sanitizeForFirestore<T>(data: T): T {
+  if (data === undefined) return null as any;
+  if (data === null || typeof data !== "object") return data;
+  if (Array.isArray(data)) {
+    return data.map(sanitizeForFirestore) as any;
+  }
+  const cleanObj: any = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== undefined) {
+      cleanObj[key] = sanitizeForFirestore(value);
+    }
+  }
+  return cleanObj;
+}
+
 /**
  * Centrally log an error to Firestore and console.
  * Defined here to avoid circular dependency with logger.ts
@@ -87,8 +103,8 @@ export async function logError(
   context: any = {}
 ) {
   const message = error instanceof Error ? error.message : String(error);
-  const stack = error instanceof Error ? error.stack : undefined;
-  const userEmail = auth.currentUser?.email || undefined;
+  const stack = error instanceof Error ? error.stack : null;
+  const userEmail = auth.currentUser?.email || null;
 
   console.error(`[${source.toUpperCase()}] Error:`, message, context);
 
@@ -96,7 +112,7 @@ export async function logError(
     const id = "err_" + Math.random().toString(36).substring(2, 11);
     const now = new Date().toISOString();
     const docRef = doc(db, "error_logs", id);
-    await setDoc(docRef, { 
+    const payload = sanitizeForFirestore({ 
       message, 
       source, 
       stack, 
@@ -105,6 +121,7 @@ export async function logError(
       id, 
       createdAt: now 
     });
+    await setDoc(docRef, payload);
   } catch (e) {
     console.error("Critical: Failed to log error to Firestore", e);
   }
@@ -114,25 +131,24 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
+      userId: auth.currentUser?.uid || null,
+      email: auth.currentUser?.email || null,
+      emailVerified: auth.currentUser?.emailVerified || false,
+      isAnonymous: auth.currentUser?.isAnonymous || false,
+      tenantId: auth.currentUser?.tenantId || null,
       providerInfo: auth.currentUser?.providerData?.map(provider => ({
         providerId: provider.providerId,
-        email: provider.email,
+        email: provider.email || null,
       })) || []
     },
     operationType,
     path
-  }
+  };
   
   // Log to centralized error logs
   logError(error, "firestore", { operationType, path, authInfo: errInfo.authInfo });
 
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
 }
 
 // Master Accounts Repository API that handles Firestore operations
@@ -369,18 +385,45 @@ export const allowedUsersRepo = {
     }
   },
 
+  async getById(email: string): Promise<AllowedUser | null> {
+    try {
+      const id = email.trim().toLowerCase();
+      const docRef = doc(db, ALLOWED_USERS_COLLECTION, id);
+      const snapshot = await getDoc(docRef);
+      if (!snapshot.exists()) return null;
+      return { id: snapshot.id, ...snapshot.data() } as AllowedUser;
+    } catch (error) {
+      console.error("Error getting user by id:", error);
+      return null;
+    }
+  },
+
+  async getByUsername(username: string): Promise<AllowedUser | null> {
+    try {
+      const colRef = collection(db, ALLOWED_USERS_COLLECTION);
+      const q = query(colRef, where("username", "==", username));
+      const snapshot = await getDocs(q);
+      if (snapshot.empty) return null;
+      return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as AllowedUser;
+    } catch (error) {
+      console.error("Error getting user by username:", error);
+      return null;
+    }
+  },
+
   async create(item: Omit<AllowedUser, "createdAt" | "updatedAt">): Promise<string> {
     const id = item.email.trim().toLowerCase();
     const now = new Date().toISOString();
     const docRef = doc(db, ALLOWED_USERS_COLLECTION, id);
     try {
-      await setDoc(docRef, {
+      const payload = sanitizeForFirestore({
         ...item,
         id,
         email: item.email.trim().toLowerCase(),
         createdAt: now,
         updatedAt: now
       });
+      await setDoc(docRef, payload);
       return id;
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, ALLOWED_USERS_COLLECTION);
@@ -391,12 +434,12 @@ export const allowedUsersRepo = {
   async update(id: string, updates: Partial<Omit<AllowedUser, "id" | "createdAt">>): Promise<void> {
     const now = new Date().toISOString();
     const docRef = doc(db, ALLOWED_USERS_COLLECTION, id);
-    const sanitizedUpdates = { ...updates, updatedAt: now };
+    const sanitizedUpdates: any = { ...updates, updatedAt: now };
     if (updates.email) {
       sanitizedUpdates.email = updates.email.trim().toLowerCase();
     }
     try {
-      await updateDoc(docRef, sanitizedUpdates);
+      await updateDoc(docRef, sanitizeForFirestore(sanitizedUpdates));
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, ALLOWED_USERS_COLLECTION);
     }
@@ -664,7 +707,8 @@ export const errorLogsRepo = {
     const now = new Date().toISOString();
     const docRef = doc(db, ERROR_LOGS_COLLECTION, id);
     try {
-      await setDoc(docRef, { ...log, id, createdAt: now });
+      const payload = sanitizeForFirestore({ ...log, id, createdAt: now });
+      await setDoc(docRef, payload);
       return id;
     } catch (error) {
       console.error("Critical: Failed to log error to Firestore", error);

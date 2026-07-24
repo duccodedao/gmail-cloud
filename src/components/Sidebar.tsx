@@ -18,6 +18,7 @@ import {
   Smartphone
 } from "lucide-react";
 import { Theme } from "../types";
+import { copyToClipboard } from "../utils/clipboard";
 
 interface SidebarProps {
   activeTab: string;
@@ -59,10 +60,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: "accounts", label: "Danh sách Email", icon: Mail },
     { id: "temp-email", label: "Gmail Tạm Thời", icon: Sparkles },
     { id: "sync", label: "Nhập & Xuất", icon: ArrowLeftRight },
-    { id: "settings", label: "Cài đặt hệ thống", icon: Settings },
+    { id: "settings", label: "Cài đặt", icon: Settings },
     { id: "admin-panel", label: "Admin Panel", icon: ShieldCheck }
   ] : [
-    { id: "temp-email", label: "Gmail Tạm Thời", icon: Sparkles }
+    { id: "temp-email", label: "Gmail Tạm Thời", icon: Sparkles },
+    { id: "settings", label: "Cài đặt", icon: Settings }
   ];
 
   const handleNav = (tabId: string) => {
@@ -72,9 +74,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const handleCopyPromo = (e: React.MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText("SVNSFRHG");
-    setPromoCopied(true);
-    setTimeout(() => setPromoCopied(false), 2000);
+    copyToClipboard("SVNSFRHG").then((success) => {
+      if (success) {
+        setPromoCopied(true);
+        setTimeout(() => setPromoCopied(false), 2000);
+      }
+    });
   };
 
   return (

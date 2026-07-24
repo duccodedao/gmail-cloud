@@ -38,7 +38,9 @@ import {
 } from "../services/tempEmailService";
 import { GmailAccount, AccountStatus, AllowedUser } from "../types";
 import { auth, domainReportsRepo, domainStatusRepo, tempEmailsLogRepo, tempEmailHistoryRepo } from "../lib/firebase";
+import { sendSignInLinkToEmail } from "firebase/auth";
 import { extractOTP } from "../utils/otp";
+import { copyToClipboard } from "../utils/clipboard";
 
 interface TempEmailViewProps {
   addToast: (message: string, type: "success" | "error" | "info" | "warning") => void;
@@ -61,6 +63,7 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
   const [copied, setCopied] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"html" | "text">("html");
   const [isAddingToDashboard, setIsAddingToDashboard] = useState<boolean>(false);
+  const [isSendingTestMail, setIsSendingTestMail] = useState<boolean>(false);
   const [accountNote, setAccountNote] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [domainStatuses, setDomainStatuses] = useState<any[]>([]);
@@ -76,18 +79,24 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
     typeof window !== "undefined" && "Notification" in window ? Notification.permission : "default"
   );
+  const [testEmailCooldown, setTestEmailCooldown] = useState<number>(0);
+  const [generateCooldown, setGenerateCooldown] = useState<number>(0);
 
-  // Request Notification permission on mount
+  // Cooldown timers
   useEffect(() => {
-    if ("Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission().then((permission) => {
-        setNotificationPermission(permission);
-        if (permission === "granted") {
-          addToast("Đã kích hoạt quyền nhận thông báo đẩy khi có thư mới!", "success");
-        }
-      });
+    const timer = setInterval(() => {
+      setTestEmailCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+      setGenerateCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Sync Notification permission state on mount safely
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setNotificationPermission(Notification.permission);
     }
-  }, [addToast]);
+  }, []);
 
 
 
@@ -287,66 +296,90 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
               (msg.subject && msg.subject.toLowerCase().includes("unich")) ||
               (bodyText.toLowerCase().includes("unich"));
 
-            if ("Notification" in window && Notification.permission === "granted") {
-              const senderName = msg.senderName || msg.from.split("<")[0].trim() || "Người gửi";
-              
-              if (isUnich) {
-                // Đối với Unich chỉ hiển thị Tên, và OTP
-                new Notification("Unich OTP", {
-                  body: `Tên: ${senderName}\nOTP: ${otp || "Không tìm thấy mã OTP"}`,
-                  icon: "/favicon.ico",
-                  tag: `msg-${msg.id}`
-                });
-              } else {
-                // Thư bình thường
-                new Notification(`Thư mới từ ${senderName}`, {
-                  body: `Tiêu đề: ${msg.subject}`,
-                  icon: "/favicon.ico",
-                  tag: `msg-${msg.id}`
-                });
+            const enablePush = userProfile ? userProfile.enableBrowserPush !== false : true;
+            const onlyUnichFilter = userProfile ? userProfile.onlyUnich === true : false;
+
+            if (enablePush && (!onlyUnichFilter || isUnich)) {
+              if ("Notification" in window && Notification.permission === "granted") {
+                const senderName = msg.senderName || msg.from.split("<")[0].trim() || "Người gửi";
+                
+                try {
+                  const iconUrl = msg.avatarUrl || "/favicon.ico";
+                  if (isUnich) {
+                    // Đối với Unich chỉ hiển thị Tên, và OTP
+                    new Notification("Unich OTP", {
+                      body: `Tên: ${senderName}\nOTP: ${otp || "Không tìm thấy mã OTP"}`,
+                      icon: iconUrl,
+                      tag: `msg-${msg.id}`
+                    });
+                  } else {
+                    // Thư bình thường
+                    new Notification(`Thư mới từ ${senderName}`, {
+                      body: `Tiêu đề: ${msg.subject}`,
+                      icon: iconUrl,
+                      tag: `msg-${msg.id}`
+                    });
+                  }
+                } catch (notifyErr) {
+                  console.warn("Could not display browser notification (likely blocked in iframe context):", notifyErr);
+                }
               }
             }
           } catch (e) {
             console.error("Failed to auto-extract OTP / notify", e);
             // Fallback notification if message details could not be loaded
-            if ("Notification" in window && Notification.permission === "granted") {
-              const senderName = msg.senderName || msg.from.split("<")[0].trim() || "Người gửi";
-              const isUnichFallback = 
-                (msg.senderName && msg.senderName.toLowerCase().includes("unich")) ||
-                (msg.from && msg.from.toLowerCase().includes("unich")) ||
-                (msg.subject && msg.subject.toLowerCase().includes("unich"));
-              
-              if (isUnichFallback) {
-                new Notification("Unich OTP", {
-                  body: `Tên: ${senderName}\nOTP: [Đang tải...]`,
-                  icon: "/favicon.ico",
-                  tag: `msg-${msg.id}`
-                });
-              } else {
-                new Notification(`Thư mới từ ${senderName}`, {
-                  body: `Tiêu đề: ${msg.subject}`,
-                  icon: "/favicon.ico",
-                  tag: `msg-${msg.id}`
-                });
+            const enablePush = userProfile ? userProfile.enableBrowserPush !== false : true;
+            const onlyUnichFilter = userProfile ? userProfile.onlyUnich === true : false;
+            
+            const isUnichFallback = 
+              (msg.senderName && msg.senderName.toLowerCase().includes("unich")) ||
+              (msg.from && msg.from.toLowerCase().includes("unich")) ||
+              (msg.subject && msg.subject.toLowerCase().includes("unich"));
+
+            if (enablePush && (!onlyUnichFilter || isUnichFallback)) {
+              if ("Notification" in window && Notification.permission === "granted") {
+                const senderName = msg.senderName || msg.from.split("<")[0].trim() || "Người gửi";
+                
+                try {
+                  const iconUrl = msg.avatarUrl || "/favicon.ico";
+                  if (isUnichFallback) {
+                    new Notification("Unich OTP", {
+                      body: `Tên: ${senderName}\nOTP: [Đang tải...]`,
+                      icon: iconUrl,
+                      tag: `msg-${msg.id}`
+                    });
+                  } else {
+                    new Notification(`Thư mới từ ${senderName}`, {
+                      body: `Tiêu đề: ${msg.subject}`,
+                      icon: iconUrl,
+                      tag: `msg-${msg.id}`
+                    });
+                  }
+                } catch (notifyErr) {
+                  console.warn("Could not display fallback browser notification (likely blocked in iframe context):", notifyErr);
+                }
               }
             }
           }
         });
         
         // Soft audio alert
-        try {
-          const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-          const oscillator = audioCtx.createOscillator();
-          const gainNode = audioCtx.createGain();
-          oscillator.connect(gainNode);
-          gainNode.connect(audioCtx.destination);
-          oscillator.type = "sine";
-          oscillator.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
-          gainNode.gain.setValueAtTime(0.08, audioCtx.currentTime);
-          oscillator.start();
-          oscillator.stop(audioCtx.currentTime + 0.15);
-        } catch (e) {
-          // ignore blocked audio
+        const enableSound = userProfile ? userProfile.enableSound !== false : true;
+        if (enableSound) {
+          try {
+            const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            oscillator.type = "sine";
+            oscillator.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
+            gainNode.gain.setValueAtTime(0.08, audioCtx.currentTime);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.15);
+          } catch (e) {
+            // ignore blocked audio
+          }
         }
       }
       setMessages(latest);
@@ -356,6 +389,11 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
   };
 
   const handleGenerateNew = async (modeToUse = emailMode, showToast = true) => {
+    if (generateCooldown > 0) {
+      addToast(`Vui lòng đợi ${generateCooldown}s trước khi tạo email mới!`, "warning");
+      return;
+    }
+
     // Check email limit
     if (userProfile && userProfile.emailLimit && userProfile.emailLimit > 0) {
       if (emailHistory.length >= userProfile.emailLimit) {
@@ -372,6 +410,7 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
       setMessages([]);
       setSelectedMessage(null);
       setCountdown(3);
+      setGenerateCooldown(30);
       
       localStorage.setItem("temp_gmail_info", JSON.stringify(info));
 
@@ -501,10 +540,15 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
 
   const handleCopy = () => {
     if (!emailInfo) return;
-    navigator.clipboard.writeText(emailInfo.email);
-    setCopied(true);
-    addToast("Đã sao chép địa chỉ Email vào bộ nhớ tạm!", "success");
-    setTimeout(() => setCopied(false), 2000);
+    copyToClipboard(emailInfo.email).then((success) => {
+      if (success) {
+        setCopied(true);
+        addToast("Đã sao chép địa chỉ Email vào bộ nhớ tạm!", "success");
+        setTimeout(() => setCopied(false), 2000);
+      } else {
+        addToast("Không thể sao chép địa chỉ Email", "error");
+      }
+    });
   };
 
   const handleManualRefresh = async () => {
@@ -572,9 +616,84 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
     }
   };
 
+  const handleSendTestFirebaseMail = async () => {
+    if (!emailInfo?.email) return;
+    if (testEmailCooldown > 0) {
+      addToast(`Vui lòng đợi ${testEmailCooldown}s trước khi gửi lại thư test.`, "warning");
+      return;
+    }
+    setIsSendingTestMail(true);
+    try {
+      const actionCodeSettings = {
+        url: window.location.origin || window.location.href,
+        handleCodeInApp: true,
+      };
+      await sendSignInLinkToEmail(auth, emailInfo.email, actionCodeSettings);
+      addToast("Đã gửi thư xác nhận test từ Firebase thành công! Hãy đợi khoảng 5-15 giây để nhận thư.", "success");
+      setTestEmailCooldown(30);
+    } catch (err: any) {
+      if (err.code === "auth/quota-exceeded") {
+        console.warn("Firebase quota exceeded for test email.");
+        addToast("Firebase đã hết hạn mức gửi email miễn phí hôm nay. Vui lòng tự dùng Gmail cá nhân của bạn để gửi thư test nhé!", "warning");
+        setTestEmailCooldown(3600); // 1 hour cooldown to prevent spamming
+      } else {
+        console.error("Failed to send Firebase test email:", err);
+        addToast(`Không thể gửi thư test từ Firebase: ${err.message || err}`, "error");
+      }
+    } finally {
+      setIsSendingTestMail(false);
+    }
+  };
+
   return (
     <div className="space-y-8" id="temp-email-hub">
       
+      {/* Firebase Test Email Top Banner */}
+      {emailInfo && (
+        <div className="bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-950/20 dark:to-purple-950/20 border border-indigo-100 dark:border-indigo-900/50 rounded-3xl p-5 shadow-sm flex flex-col md:flex-row items-center justify-between gap-4 transition-all">
+          <div className="flex items-start gap-3.5 max-w-2xl">
+            <div className="p-3 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-2xl shrink-0 mt-0.5">
+              <Sparkles className="w-5 h-5 animate-pulse" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-black text-slate-800 dark:text-slate-100">Kiểm thử tốc độ nhận Mail với Firebase</h3>
+                <span className="text-[9px] bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                  Khuyên dùng
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                Gửi một thư xác nhận đăng nhập thực tế từ hệ thống Google Firebase đến địa chỉ <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-500/5 px-1.5 py-0.5 rounded-md">{emailInfo.email}</span> để tự mình trải nghiệm tốc độ nhận thư của hệ thống.
+              </p>
+            </div>
+          </div>
+          <div className="w-full md:w-auto shrink-0">
+            <button
+              onClick={handleSendTestFirebaseMail}
+              disabled={isSendingTestMail || testEmailCooldown > 0}
+              className="w-full md:w-auto flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-xs font-black text-white bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 shadow-md shadow-indigo-500/10 transition-all cursor-pointer active:scale-98 disabled:opacity-50"
+            >
+              {isSendingTestMail ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  Đang gửi...
+                </>
+              ) : testEmailCooldown > 0 ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  Gửi lại sau ({testEmailCooldown}s)
+                </>
+              ) : (
+                <>
+                  <Mail className="w-4 h-4" />
+                  Gửi thư test từ Firebase
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Panel Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         
@@ -595,70 +714,8 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
               </div>
             </div>
 
-            {/* Email Address Viewer Box */}
-            <div className="space-y-1.5">
-              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">Địa chỉ hiện tại:</span>
-              <div className="flex items-center justify-between gap-3 p-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-850 rounded-2xl group transition-all">
-                <span className="text-sm md:text-base font-mono font-black text-slate-800 dark:text-slate-100 select-all truncate tracking-tight pl-1.5">
-                  {emailInfo?.email || "Đang khởi tạo..."}
-                </span>
-                <button
-                  onClick={handleCopy}
-                  disabled={!emailInfo}
-                  className={`p-2.5 rounded-xl transition-all duration-200 cursor-pointer shrink-0 ${
-                    copied 
-                      ? "bg-emerald-500 text-white shadow-md shadow-emerald-500/10" 
-                      : "bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-850 text-slate-500 hover:text-blue-600 hover:border-blue-500/30 shadow-sm"
-                  }`}
-                  title="Sao chép nhanh địa chỉ Email"
-                >
-                  {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                </button>
-              </div>
-
-              {/* Special Addition Trigger Button */}
-              {emailInfo && onAddAccount && userProfile?.role === "admin" && (
-                <div className="space-y-2 pt-1.5">
-                  {!existingEmails?.includes(emailInfo.email) && (
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
-                        Ghi chú tài khoản (Bắt buộc hoặc bỏ trống):
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Nhập ghi chú... (Bỏ trống mặc định là 'Chờ duyệt')"
-                        value={accountNote}
-                        onChange={(e) => setAccountNote(e.target.value)}
-                        className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-850 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-medium"
-                      />
-                    </div>
-                  )}
-
-                  {existingEmails?.includes(emailInfo.email) ? (
-                    <div className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-xs font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                      <CheckCircle2 className="w-4 h-4" />
-                      Đã thêm vào Dashboard
-                    </div>
-                  ) : (
-                    <button
-                      onClick={handleAddToDashboard}
-                      disabled={isAddingToDashboard}
-                      className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-xs font-extrabold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800/80 cursor-pointer transition-all active:scale-98 disabled:opacity-50 min-h-[44px]"
-                    >
-                      <PlusCircle className="w-4.5 h-4.5" />
-                      Thêm Email vào Dashboard
-                    </button>
-                  )}
-                </div>
-              )}
-
-              <p className="text-[10px] text-slate-400 font-medium">
-                <CheckCircle2 className="w-3 h-3 text-emerald-500 inline mr-1" /> Đây là hòm thư rác thực tế có thời hạn hoạt động. Bạn có thể sử dụng để đăng ký tài khoản thật!
-              </p>
-            </div>
-
-            {/* Prefix & Custom Domain settings */}
-            <div className="grid grid-cols-2 gap-3.5 pt-3 border-t border-slate-100 dark:border-slate-850">
+            {/* 1. Tiền tố (Prefix) | Tên miền (Domain) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               <div className="space-y-1.5">
                 <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block truncate">
                   Tiền tố (Prefix)
@@ -672,12 +729,12 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
                 />
               </div>
 
-              {availableDomains.length > 0 ? (
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1 block truncate">
-                    <Globe className="w-3 h-3 text-slate-400 shrink-0" />
-                    Tên miền (Domain)
-                  </label>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1 block truncate">
+                  <Globe className="w-3 h-3 text-slate-400 shrink-0" />
+                  Tên miền (Domain)
+                </label>
+                {availableDomains.length > 0 ? (
                   <select
                     value={selectedDomain}
                     onChange={(e) => setSelectedDomain(e.target.value)}
@@ -693,105 +750,118 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
                       );
                     })}
                   </select>
-                </div>
-              ) : (
-                <div />
-              )}
-            </div>
-
-            {/* Main generation buttons */}
-            <div className="grid grid-cols-2 gap-3.5 pt-2">
-              <button
-                onClick={() => handleGenerateNew("real")}
-                disabled={isRefreshing}
-                className="flex items-center justify-center gap-1.5 py-3 rounded-2xl text-xs font-extrabold bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/10 transition-all cursor-pointer active:scale-98 disabled:opacity-50"
-              >
-                <Sparkles className="w-4 h-4" />
-                Tạo Email Mới
-              </button>
-              <button
-                onClick={handleManualRefresh}
-                disabled={isRefreshing || !emailInfo}
-                className="flex items-center justify-center gap-1.5 py-3 rounded-2xl text-xs font-extrabold border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-850 text-slate-700 dark:text-slate-300 transition-all cursor-pointer active:scale-98"
-              >
-                <RefreshCw className={`w-4 h-4 ${isRefreshing ? "animate-spin" : ""}`} />
-                Làm Mới Inbox
-              </button>
-            </div>
-
-            {/* Error Report Button */}
-            {emailInfo && (
-              <div className="pt-2">
-                <button
-                  onClick={handleReportError}
-                  className="flex items-center justify-center gap-1.5 w-full py-2.5 rounded-2xl text-[11px] font-bold bg-rose-50 hover:bg-rose-100 dark:bg-rose-500/10 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 transition-all cursor-pointer"
-                >
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  Báo cáo Tên miền này không nhận được thư
-                </button>
+                ) : (
+                  <div className="px-3 py-2.5 text-xs text-slate-400 border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50/50 dark:bg-slate-950/50">
+                    Chưa có tên miền
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </div>
 
-          {/* Automatic Check Status & Notification status Widget */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900/60 border border-slate-200/85 dark:border-slate-800 p-4 rounded-3xl shadow-sm transition-all">
-              <div className="flex items-center gap-2.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
-                <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                  Tự động kiểm tra thư mới: <span className="font-mono text-indigo-600 dark:text-indigo-400 text-sm font-black">{countdown}s</span>
+            {/* 2. Địa chỉ hiện tại & Ghi chú tài khoản (Kích thước & Chiều rộng bằng nhau) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-2 border-t border-slate-100 dark:border-slate-850">
+              <div className="space-y-1.5">
+                <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block truncate">
+                  Địa chỉ hiện tại:
                 </span>
+                <div className="w-full flex items-center justify-between gap-2 px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 group transition-all min-h-[42px]">
+                  <span className="text-xs font-mono font-black text-slate-800 dark:text-slate-100 select-all truncate tracking-tight">
+                    {emailInfo?.email || "Đang khởi tạo..."}
+                  </span>
+                  <button
+                    onClick={handleCopy}
+                    disabled={!emailInfo}
+                    className={`p-1.5 rounded-lg transition-all duration-200 cursor-pointer shrink-0 ${
+                      copied 
+                        ? "bg-emerald-500 text-white shadow-md shadow-emerald-500/10" 
+                        : "bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-500 hover:text-blue-600 hover:border-blue-500/30 shadow-sm"
+                    }`}
+                    title="Sao chép nhanh địa chỉ Email"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
               </div>
-              <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold">Không cần tải lại trang</p>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block truncate">
+                  Ghi chú tài khoản:
+                </label>
+                <input
+                  type="text"
+                  placeholder="Mặc định: Chờ duyệt"
+                  value={accountNote}
+                  onChange={(e) => setAccountNote(e.target.value)}
+                  className="w-full px-3 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-medium min-h-[42px]"
+                />
+              </div>
             </div>
 
-            {/* Notification Permission Request Block */}
-            {"Notification" in window && (
-              <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900/60 border border-slate-200/85 dark:border-slate-800 p-4 rounded-3xl shadow-sm transition-all">
-                <div className="flex items-center gap-2.5">
-                  <div className={`w-2.5 h-2.5 rounded-full ${
-                    notificationPermission === "granted" 
-                      ? "bg-emerald-500" 
-                      : notificationPermission === "denied"
-                        ? "bg-rose-500"
-                        : "bg-amber-500 animate-pulse"
-                  }`} />
-                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                    Thông báo đẩy:{" "}
-                    <span className={`font-extrabold ${
-                      notificationPermission === "granted" 
-                        ? "text-emerald-600 dark:text-emerald-400" 
-                        : notificationPermission === "denied"
-                          ? "text-rose-600 dark:text-rose-400"
-                          : "text-amber-600 dark:text-amber-400"
-                    }`}>
-                      {notificationPermission === "granted" 
-                        ? "Đã kích hoạt" 
-                        : notificationPermission === "denied"
-                          ? "Bị chặn"
-                          : "Chưa thiết lập"}
-                    </span>
-                  </span>
-                </div>
-                {notificationPermission !== "granted" && (
+            {/* 3. Thêm Email vào Dashboard */}
+            {emailInfo && onAddAccount && userProfile?.role === "admin" && (
+              <div className="pt-1">
+                {existingEmails?.includes(emailInfo.email) ? (
+                  <div className="flex items-center justify-center gap-2 w-full py-2.5 rounded-2xl text-xs font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                    <CheckCircle2 className="w-4 h-4" />
+                    Đã thêm vào Dashboard
+                  </div>
+                ) : (
                   <button
-                    onClick={() => {
-                      Notification.requestPermission().then((permission) => {
-                        setNotificationPermission(permission);
-                        if (permission === "granted") {
-                          addToast("Đã kích hoạt thông báo đẩy hệ thống!", "success");
-                        } else if (permission === "denied") {
-                          addToast("Bạn đã chặn thông báo đẩy. Hãy mở cài đặt trình duyệt để cho phép.", "warning");
-                        }
-                      });
-                    }}
-                    className="px-2.5 py-1.5 text-[10px] font-extrabold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition-all cursor-pointer shadow-sm shadow-indigo-500/10 active:scale-95"
+                    onClick={handleAddToDashboard}
+                    disabled={isAddingToDashboard}
+                    className="flex items-center justify-center gap-2 w-full py-3 rounded-2xl text-xs font-extrabold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800/80 cursor-pointer transition-all active:scale-98 disabled:opacity-50 min-h-[44px]"
                   >
-                    Bật thông báo
+                    <PlusCircle className="w-4.5 h-4.5" />
+                    Thêm Email vào Dashboard
                   </button>
                 )}
               </div>
             )}
+
+            {/* 4. Tạo mail mới | Làm mới | Báo cáo (Chiều rộng bằng nhau - grid-cols-3) */}
+            <div className="grid grid-cols-3 gap-2 pt-3 border-t border-slate-100 dark:border-slate-850">
+              {/* Tạo mail mới */}
+              <button
+                onClick={() => handleGenerateNew("real")}
+                disabled={isRefreshing}
+                className="w-full flex items-center justify-center gap-1.5 py-3 px-2 rounded-2xl text-xs font-extrabold bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/20 transition-all cursor-pointer active:scale-98 disabled:opacity-50"
+              >
+                <Sparkles className="w-4 h-4 shrink-0" />
+                <span className="truncate">{generateCooldown > 0 ? `${generateCooldown}s...` : "Tạo mail mới"}</span>
+              </button>
+
+              {/* Làm mới */}
+              <button
+                onClick={handleManualRefresh}
+                disabled={isRefreshing || !emailInfo}
+                className="w-full flex items-center justify-center gap-1.5 py-3 px-2 rounded-2xl text-xs font-extrabold border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition-all cursor-pointer active:scale-98 disabled:opacity-40"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isRefreshing ? "animate-spin text-blue-600 dark:text-blue-400" : ""}`} />
+                <span className="truncate">Làm mới</span>
+              </button>
+
+              {/* Báo cáo */}
+              <button
+                onClick={handleReportError}
+                disabled={!emailInfo}
+                className="w-full flex items-center justify-center gap-1.5 py-3 px-2 rounded-2xl text-xs font-extrabold bg-rose-50 hover:bg-rose-100 dark:bg-rose-500/10 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 transition-all cursor-pointer active:scale-98 disabled:opacity-40"
+              >
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">Báo cáo</span>
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-850 text-xs font-bold text-slate-600 dark:text-slate-400">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-ping shrink-0" />
+                <span>Thời gian kiểm tra thư: <strong className="font-mono text-indigo-600 dark:text-indigo-400 text-xs font-black">{countdown}s</strong></span>
+              </div>
+              <span className="text-[10px] text-slate-400 font-semibold">Tự động cập nhật</span>
+            </div>
+          </div>
+
+          {/* Automatic Check Status Footer */}
+          <div className="pt-1">
           </div>
 
         </div>
@@ -915,8 +985,13 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
                                 className="mt-1 flex items-center gap-1.5"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  navigator.clipboard.writeText(otpMap[msg.id]);
-                                  addToast(`Đã sao chép mã OTP: ${otpMap[msg.id]}`, "success");
+                                  copyToClipboard(otpMap[msg.id]).then((success) => {
+                                    if (success) {
+                                      addToast(`Đã sao chép mã OTP: ${otpMap[msg.id]}`, "success");
+                                    } else {
+                                      addToast("Không thể sao chép mã OTP", "error");
+                                    }
+                                  });
                                 }}
                               >
                                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 text-[11px] font-black shadow-sm group/otp hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-all cursor-copy">

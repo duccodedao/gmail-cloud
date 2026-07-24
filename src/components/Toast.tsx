@@ -7,7 +7,7 @@ interface ToastProps extends ToastMessage {
   onClose: (id: string) => void;
 }
 
-export const Toast: React.FC<ToastProps> = ({ id, message, type, duration = 3000, onClose }) => {
+export const Toast: React.FC<ToastProps> = ({ id, message, type, duration = 2000, onClose }) => {
   useEffect(() => {
     const timer = setTimeout(() => {
       onClose(id);
@@ -57,21 +57,25 @@ export const Toast: React.FC<ToastProps> = ({ id, message, type, duration = 3000
       initial={{ opacity: 0, y: 50, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.15 } }}
-      className={`relative flex items-center justify-between p-4 mb-3 w-80 md:w-96 rounded-xl border shadow-lg backdrop-blur-md ${theme.bg} ${theme.text} overflow-hidden pointer-events-auto`}
+      onClick={() => onClose(id)}
+      className={`relative flex items-center justify-between p-3.5 mb-2 w-72 md:w-80 rounded-xl border shadow-lg backdrop-blur-md ${theme.bg} ${theme.text} overflow-hidden pointer-events-auto cursor-pointer active:scale-98 transition-transform`}
       style={{ boxShadow: "0 10px 30px -10px rgba(0,0,0,0.15)" }}
       id={`toast-${id}`}
     >
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2.5">
         {theme.icon}
-        <p className="text-sm font-medium pr-4 leading-relaxed">{message}</p>
+        <p className="text-xs font-semibold pr-2 leading-snug">{message}</p>
       </div>
       <button
-        onClick={() => onClose(id)}
-        className="p-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500/20 cursor-pointer"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose(id);
+        }}
+        className="p-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors focus:outline-none cursor-pointer shrink-0"
         aria-label="Close notification"
         id={`toast-close-${id}`}
       >
-        <X className="w-4 h-4 opacity-60 hover:opacity-100" />
+        <X className="w-3.5 h-3.5 opacity-60 hover:opacity-100" />
       </button>
 
       {/* Animated self-draining progress bar */}
@@ -79,7 +83,7 @@ export const Toast: React.FC<ToastProps> = ({ id, message, type, duration = 3000
         initial={{ width: "100%" }}
         animate={{ width: "0%" }}
         transition={{ duration: duration / 1000, ease: "linear" }}
-        className={`absolute bottom-0 left-0 h-1 ${theme.progress}`}
+        className={`absolute bottom-0 left-0 h-0.5 ${theme.progress}`}
       />
     </motion.div>
   );

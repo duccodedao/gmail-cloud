@@ -16,13 +16,15 @@ import {
   CheckCircle,
   HelpCircle,
   UserCheck,
-  AlertCircle
+  AlertCircle,
+  MapPin
 } from "lucide-react";
 import { ConfirmModal } from "../ConfirmModal";
 import { AllowedUser, DashboardStats, TempEmailLog } from "../../types";
 import { tempEmailsLogRepo, domainStatusRepo, testHistoryRepo } from "../../lib/firebase";
 import { StatsCards } from "../StatsCards";
 import { motion, AnimatePresence } from "motion/react";
+import { copyToClipboard } from "../../utils/clipboard";
 import { DomainManagement } from "./DomainManagement";
 import ErrorLogs from "./ErrorLogs";
 import { generateTempEmail, fetchMessages, getAvailableDomains, GeneratedEmailInfo } from "../../services/tempEmailService";
@@ -148,7 +150,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // Form states
   const [formEmail, setFormEmail] = useState("");
   const [formName, setFormName] = useState("");
+  const [formUsername, setFormUsername] = useState("");
   const [formRole, setFormRole] = useState<"admin" | "user">("user");
+  const [formIsApproved, setFormIsApproved] = useState<boolean>(true);
   const [formEmailLimit, setFormEmailLimit] = useState<number>(0);
   const [formNote, setFormNote] = useState("");
 
@@ -156,7 +160,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setEditingUser(null);
     setFormEmail("");
     setFormName("");
+    setFormUsername("");
     setFormRole("user");
+    setFormIsApproved(true);
     setFormEmailLimit(0);
     setFormNote("");
     setIsModalOpen(true);
@@ -166,7 +172,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setEditingUser(user);
     setFormEmail(user.email);
     setFormName(user.name);
+    setFormUsername(user.username || "");
     setFormRole(user.role);
+    setFormIsApproved(user.isApproved !== false);
     setFormEmailLimit(user.emailLimit || 0);
     setFormNote(user.note || "");
     setIsModalOpen(true);
@@ -187,13 +195,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
 
     const emailLower = formEmail.trim().toLowerCase();
+    const currentUsername = formUsername.trim();
 
     try {
       if (editingUser) {
         await onEditUser(editingUser.id, {
           email: emailLower,
           name: formName.trim(),
+          username: currentUsername || undefined,
           role: formRole,
+          isApproved: formIsApproved,
           emailLimit: formEmailLimit > 0 ? formEmailLimit : undefined,
           note: formNote.trim()
         });
@@ -209,7 +220,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           id: emailLower,
           email: emailLower,
           name: formName.trim(),
+          username: currentUsername || undefined,
           role: formRole,
+          isApproved: formIsApproved,
           emailLimit: formEmailLimit > 0 ? formEmailLimit : undefined,
           note: formNote.trim()
         });
@@ -258,6 +271,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const filteredUsers = allowedUsers.filter(user => 
     user.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
     user.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (user.username || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
     (user.note || "").toLowerCase().includes(searchQuery.toLowerCase())
   );
 
@@ -522,6 +536,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <th className="px-6 py-4">Số Email Đã Tạo</th>
                       <th className="px-6 py-4">Mail trong ngày / Giới hạn</th>
                       <th className="px-6 py-4">Ghi Chú</th>
+                      <th className="px-6 py-4">IP & Vị Trí Đăng Nhập</th>
                       <th className="px-6 py-4">Ngày Đăng Ký</th>
                       <th className="px-6 py-4 text-right">Thao Tác</th>
                     </tr>
@@ -529,7 +544,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-xs font-semibold">
                     {filteredUsers.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="text-center py-12 text-slate-400 dark:text-slate-500 font-medium">
+                        <td colSpan={8} className="text-center py-12 text-slate-400 dark:text-slate-500 font-medium">
                           {searchQuery ? "Không tìm thấy người dùng phù hợp." : "Chưa có người dùng nào được phân quyền."}
                         </td>
                       </tr>
@@ -559,23 +574,35 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 <div className="flex flex-col min-w-0">
                                   <span className="text-slate-800 dark:text-slate-100 font-bold truncate leading-snug">{user.name}</span>
                                   <span className="text-[11px] text-slate-400 dark:text-slate-500 font-medium truncate tracking-wide mt-0.5">{user.email}</span>
+                                  {user.username && (
+                                    <span className="text-[10px] text-slate-400 dark:text-slate-500 font-medium truncate tracking-wide">
+                                      @{user.username}
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                             </td>
 
                             {/* Role Badge */}
                             <td className="px-6 py-4">
-                              {user.role === "admin" ? (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                                  <Shield className="w-3.5 h-3.5" />
-                                  Admin
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
-                                  <UserIcon className="w-3.5 h-3.5" />
-                                  User
-                                </span>
-                              )}
+                              <div className="flex flex-col items-start gap-1">
+                                {user.role === "admin" ? (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                                    <Shield className="w-3.5 h-3.5" />
+                                    Admin
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                                    <UserIcon className="w-3.5 h-3.5" />
+                                    User
+                                  </span>
+                                )}
+                                {user.isApproved === false && (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
+                                    Chờ duyệt
+                                  </span>
+                                )}
+                              </div>
                             </td>
 
                             {/* Email Count */}
@@ -598,9 +625,35 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                             {/* Note */}
                             <td className="px-6 py-4">
-                              <p className="text-slate-500 dark:text-slate-400 line-clamp-1 max-w-[200px] font-medium">
+                              <p className="text-slate-500 dark:text-slate-400 line-clamp-1 max-w-[160px] font-medium">
                                 {user.note || <span className="text-slate-300 dark:text-slate-600 font-normal italic">Không có</span>}
                               </p>
+                            </td>
+
+                            {/* IP & Location */}
+                            <td className="px-6 py-4 text-slate-500 dark:text-slate-400 font-medium">
+                              <div className="flex flex-col text-[11px] gap-0.5">
+                                {user.lastLoginIp ? (
+                                  <span className="font-mono font-bold text-slate-700 dark:text-slate-300">
+                                    {user.lastLoginIp}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-300 dark:text-slate-600 italic">Chưa có IP</span>
+                                )}
+                                {user.lastLoginLat && user.lastLoginLng ? (
+                                  <a 
+                                    href={`https://www.google.com/maps?q=${user.lastLoginLat},${user.lastLoginLng}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 font-semibold"
+                                  >
+                                    <MapPin className="w-3 h-3 shrink-0" />
+                                    {user.lastLoginLat.toFixed(4)}, {user.lastLoginLng.toFixed(4)}
+                                  </a>
+                                ) : user.lastLoginLocation ? (
+                                  <span className="text-slate-400 dark:text-slate-500">{user.lastLoginLocation}</span>
+                                ) : null}
+                              </div>
                             </td>
 
                             {/* Created At */}
@@ -618,6 +671,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             {/* Actions */}
                             <td className="px-6 py-4 text-right">
                               <div className="flex items-center justify-end gap-2">
+                                {user.isApproved === false && (
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        await onEditUser(user.id, { isApproved: true });
+                                        addToast(`Đã phê duyệt người dùng ${user.email}`, "success");
+                                      } catch (err) {
+                                        addToast("Lỗi khi phê duyệt người dùng", "error");
+                                      }
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 transition-all flex items-center gap-1 cursor-pointer shrink-0"
+                                    title="Phê duyệt người dùng này ngay"
+                                  >
+                                    <UserCheck className="w-3.5 h-3.5" />
+                                    Duyệt
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => handleOpenEdit(user)}
                                   className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/5 transition-all cursor-pointer"
@@ -711,7 +781,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <h3 className="text-sm font-bold text-slate-900 dark:text-white">Kiểm tra Domain {isTesting && `(${testDuration}s)`}</h3>
             <div className="flex gap-2">
                 <button 
-                  onClick={() => navigator.clipboard.writeText(testEmails.map(e => e.email.email).join(", "))}
+                  onClick={() => {
+                    const emailsText = testEmails.map(e => e.email.email).join(", ");
+                    copyToClipboard(emailsText).then((success) => {
+                      if (success) addToast("Đã copy toàn bộ email kiểm tra", "success");
+                    });
+                  }}
                   className="px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-lg text-xs font-bold hover:bg-slate-200"
                 >
                   Copy tất cả mail
@@ -903,6 +978,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <option value="user">Người dùng (Chỉ dùng Gmail Tạm Thời &amp; Inbox)</option>
                     <option value="admin">Quản trị viên (Toàn quyền hệ thống)</option>
                   </select>
+                </div>
+
+                {/* isApproved checkbox */}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="isApproved"
+                    checked={formIsApproved}
+                    onChange={(e) => setFormIsApproved(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <label htmlFor="isApproved" className="text-sm font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
+                    Phê duyệt truy cập
+                  </label>
                 </div>
 
                 {/* Email Limit */}

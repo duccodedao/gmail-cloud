@@ -43,6 +43,18 @@ function getLocalSet(key: string): Set<string> {
   }
 }
 
+export function getSenderAvatar(fromStr: string): string {
+  const normalized = (fromStr || "").toLowerCase();
+  if (normalized.includes("unich")) {
+    return "https://cdn-v2.unichwallet.com/images/airdrop/coin-black-front-001-retouch-2.png";
+  }
+  if (normalized.includes("sonlyhongduc@gmail.com") || normalized.includes("noreply@tgapp-30a28.firebaseapp.com")) {
+    return "https://raw.githubusercontent.com/duccodedao/img/main/system/icon.png";
+  }
+  const senderName = fromStr.split('@')[0] || fromStr;
+  return `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=random&color=fff&size=80`;
+}
+
 function addToLocalSet(key: string, value: string) {
   try {
     const set = getLocalSet(key);
@@ -125,7 +137,7 @@ export async function fetchMessages(info: GeneratedEmailInfo): Promise<TempEmail
       .map((msg: any) => {
         const fromStr = msg.f || "Unknown";
         const senderName = fromStr.split('@')[0] || fromStr;
-        const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=random&color=fff&size=80`;
+        const avatarUrl = getSenderAvatar(fromStr);
         
         return {
           id: msg.uid,
@@ -157,7 +169,7 @@ export async function fetchMessageDetails(info: GeneratedEmailInfo, id: string, 
 
   const fromStr = msg.f || "Unknown";
   const senderName = fromStr.split('@')[0] || fromStr;
-  const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=random&color=fff&size=80`;
+  const avatarUrl = getSenderAvatar(fromStr);
 
   return {
     id: msg.uid,

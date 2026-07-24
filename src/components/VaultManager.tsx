@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { VaultItem } from "../types";
+import { copyToClipboard } from "../utils/clipboard";
 
 interface VaultManagerProps {
   items: VaultItem[];
@@ -43,10 +44,15 @@ export const VaultManager: React.FC<VaultManagerProps> = ({
   ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   const handleCopy = (text: string, id: string, type: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(`${id}-${type}`);
-    addToast(`Đã sao chép ${type}`, "success");
-    setTimeout(() => setCopiedId(null), 2000);
+    copyToClipboard(text).then((success) => {
+      if (success) {
+        setCopiedId(`${id}-${type}`);
+        addToast(`Đã sao chép ${type}`, "success");
+        setTimeout(() => setCopiedId(null), 2000);
+      } else {
+        addToast("Không thể sao chép dữ liệu", "error");
+      }
+    });
   };
 
   return (

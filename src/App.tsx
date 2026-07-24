@@ -14,7 +14,11 @@ import {
   Palette,
   Trash2,
   HardDrive,
-  Activity
+  Activity,
+  User as UserIcon,
+  Bell,
+  Volume2,
+  Shield
 } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
@@ -29,11 +33,13 @@ import { ToastContainer } from "./components/Toast";
 import { TempEmailView } from "./components/TempEmailView";
 import { AdminPanel } from "./components/admin/AdminPanel";
 import { LoginView } from "./components/LoginView";
+import { UserSettings } from "./components/UserSettings";
 import { accountsRepo, vaultRepo, allowedUsersRepo, auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "./lib/firebase";
 import { GmailAccount, VaultItem, AccountStatus, DashboardStats, Theme, ToastMessage, AllowedUser } from "./types";
 import { motion, AnimatePresence } from "motion/react";
-import { User } from "firebase/auth";
+import { User, updateEmail, updateProfile } from "firebase/auth";
 import { initGlobalErrorLogging } from "./utils/logger";
+import { copyToClipboard } from "./utils/clipboard";
 
 // Initialize global error monitoring
 initGlobalErrorLogging();
@@ -140,8 +146,8 @@ export default function App() {
 
   const handleInstallPWA = async () => {
     if (!deferredPrompt) return;
-    deferredPrompt.prompt();
     try {
+      deferredPrompt.prompt();
       const { outcome } = await deferredPrompt.userChoice;
       if (outcome === "accepted") {
         addToast("Cài đặt Gmail Cloud thành công!", "success");
@@ -222,9 +228,39 @@ export default function App() {
     return () => unsubscribeAllowed();
   }, [currentUserProfile]);
 
-  const handleLogin = async () => {
+  const handleLogin = async (locationData?: { ip?: string; lat?: number; lng?: number; locationString?: string }) => {
     try {
-      await signInWithPopup(auth, googleProvider);
+      const res = await signInWithPopup(auth, googleProvider);
+      if (res.user && res.user.email) {
+        const emailLower = res.user.email.toLowerCase();
+        const nowIso = new Date().toISOString();
+
+        if (!isEmailHardcodedAdmin(emailLower)) {
+          const profile = await allowedUsersRepo.getById(emailLower);
+          if (!profile) {
+            await allowedUsersRepo.create({
+              id: emailLower,
+              email: emailLower,
+              name: res.user.displayName || emailLower.split('@')[0],
+              isApproved: false,
+              role: "user",
+              lastLoginIp: locationData?.ip,
+              lastLoginLat: locationData?.lat,
+              lastLoginLng: locationData?.lng,
+              lastLoginLocation: locationData?.locationString,
+              lastLoginAt: nowIso
+            });
+          } else {
+            await allowedUsersRepo.update(emailLower, {
+              lastLoginIp: locationData?.ip || profile.lastLoginIp,
+              lastLoginLat: locationData?.lat || profile.lastLoginLat,
+              lastLoginLng: locationData?.lng || profile.lastLoginLng,
+              lastLoginLocation: locationData?.locationString || profile.lastLoginLocation,
+              lastLoginAt: nowIso
+            });
+          }
+        }
+      }
       addToast("Đăng nhập thành công!", "success");
     } catch (error) {
       console.error("Login Error", error);
@@ -356,7 +392,6 @@ export default function App() {
       const updatedAcc = { ...editingAccount, ...payload, updatedAt: now };
       setAccounts(prev => prev.map(a => a.id === editingId ? updatedAcc : a));
       
-      addToast(`Đang cập nhật: ${payload.email}`, "info");
       setIsAccountModalOpen(false);
       setEditingAccount(null);
 
@@ -376,7 +411,6 @@ export default function App() {
       const newAcc: GmailAccount = { ...payload, id: tempId, createdAt: now, updatedAt: now };
       setAccounts(prev => [newAcc, ...prev]);
       
-      addToast(`Đang đăng ký: ${payload.email}`, "info");
       setIsAccountModalOpen(false);
 
       // Background Sync (Not awaited to keep UI snappy)
@@ -541,33 +575,13 @@ export default function App() {
       return;
     }
     const rawLines = accounts.map(a => `${a.email}|${a.password || ""}`).join("\n");
-    let success = false;
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(rawLines);
-        success = true;
+    copyToClipboard(rawLines).then((success) => {
+      if (success) {
+        addToast(`Đã copy nhanh ${accounts.length} tài khoản dạng định dạng: email|pass`, "success");
+      } else {
+        addToast("Lỗi sao chép thông tin", "error");
       }
-    } catch (e) {}
-
-    if (!success) {
-      try {
-        const textarea = document.createElement("textarea");
-        textarea.value = rawLines;
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        document.body.appendChild(textarea);
-        textarea.focus();
-        textarea.select();
-        success = document.execCommand("copy");
-        document.body.removeChild(textarea);
-      } catch (e) {}
-    }
-
-    if (success) {
-      addToast(`Đã copy nhanh ${accounts.length} tài khoản dạng định dạng: email|pass`, "success");
-    } else {
-      addToast("Lỗi sao chép thông tin", "error");
-    }
+    });
   };
 
   // Open Edit Dialog
@@ -731,66 +745,38 @@ export default function App() {
     return (
       <LoginView 
         onGoogleLogin={handleLogin}
-        onEmailSignIn={async (email, pass) => {
-          try {
-            await signInWithEmailAndPassword(auth, email, pass);
-            addToast("Đăng nhập thành công!", "success");
-          } catch (err: any) {
-            console.error(err);
-            let errorMsg = "Đăng nhập thất bại.";
-            if (err.code === "auth/user-not-found" || err.code === "auth/wrong-password" || err.code === "auth/invalid-credential") {
-              errorMsg = "Email hoặc mật khẩu không chính xác.";
-            }
-            addToast(errorMsg, "error");
-            throw err;
-          }
-        }}
-        onEmailSignUp={async (email, pass, name) => {
-          try {
-            await createUserWithEmailAndPassword(auth, email, pass);
-            await allowedUsersRepo.create({
-              id: email.toLowerCase(),
-              email: email.toLowerCase(),
-              name,
-              role: "user"
-            });
-            addToast("Đăng ký thành công! Bạn có thể sử dụng hòm thư tạm thời.", "success");
-          } catch (err: any) {
-            console.error(err);
-            let errorMsg = "Đăng ký thất bại.";
-            if (err.code === "auth/email-already-in-use") {
-              errorMsg = "Email này đã được sử dụng.";
-            } else if (err.code === "auth/invalid-email") {
-              errorMsg = "Địa chỉ email không hợp lệ.";
-            }
-            addToast(errorMsg, "error");
-            throw err;
-          }
-        }}
         addToast={addToast}
       />
     );
   }
 
-  if (user && !currentUserProfile) {
+  const isPendingApproval = currentUserProfile && currentUserProfile.isApproved === false;
+
+  if (user && (!currentUserProfile || isPendingApproval)) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-8 text-center shadow-sm">
-          <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-rose-500/20">
-            <ShieldAlert className="w-8 h-8 text-rose-500" />
+        <div className="max-w-md w-full bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-8 text-center shadow-xl shadow-slate-200/20 dark:shadow-black/40">
+          <div className="w-16 h-16 bg-amber-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-amber-500/20">
+            <ShieldAlert className="w-8 h-8 text-amber-500" />
           </div>
-          <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-2">
-            Từ Chối Truy Cập
+          <h2 className="text-xl font-extrabold text-slate-800 dark:text-white mb-2 tracking-tight">
+            Chờ Quản Trị Viên Phê Duyệt
           </h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mb-6 leading-relaxed font-medium text-center">
-            Tài khoản <span className="font-bold text-slate-700 dark:text-slate-300">{user.email}</span> không được phép truy cập hệ thống. Vui lòng liên hệ Quản trị viên (Admin) để được cấp quyền.
+          <p className="text-xs text-slate-500 dark:text-slate-400 mb-6 leading-relaxed font-medium text-center">
+            Tài khoản <span className="font-bold text-slate-800 dark:text-slate-100">{user.email}</span> đang chờ Quản trị viên phê duyệt. Vui lòng quay lại sau hoặc liên hệ Admin.
           </p>
+
+          <div className="p-3.5 bg-blue-50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-900/30 rounded-2xl mb-6 text-left">
+            <p className="text-[11px] text-blue-600 dark:text-blue-400 font-semibold leading-relaxed">
+              💡 Hệ thống sẽ tự động chuyển vào giao diện chính ngay khi Quản trị viên bấm Phê duyệt (không cần tải lại trang).
+            </p>
+          </div>
           
           <button
             onClick={handleDirectLogout}
-            className="w-full flex items-center justify-center gap-3 px-6 py-3.5 rounded-xl text-sm font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
+            className="w-full flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
           >
-            Đăng xuất / Thử tài khoản khác
+            Đăng xuất / Dùng tài khoản khác
           </button>
         </div>
       </div>
@@ -1228,6 +1214,12 @@ export default function App() {
                 transition={{ duration: 0.25 }}
                 className="max-w-3xl mx-auto space-y-6"
               >
+                {/* User Profile & Notification Settings */}
+                <UserSettings 
+                  userProfile={currentUserProfile}
+                  addToast={addToast}
+                />
+
                 {/* Panel 2: Preferences UI Theme Customize */}
                 <div className="p-6 md:p-8 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-3xl shadow-sm space-y-6">
                   <div>
@@ -1267,35 +1259,37 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Panel 3: Danger Wiping Settings */}
-                <div className="p-6 md:p-8 bg-rose-500/5 dark:bg-rose-500/5 border border-rose-500/10 dark:border-rose-500/20 rounded-3xl shadow-sm space-y-6">
-                  <div>
-                    <h3 className="text-base font-bold text-rose-600 dark:text-rose-400 flex items-center gap-2">
-                      <ShieldAlert className="w-5 h-5" />
-                      Vùng nguy hiểm (Danger Zone)
-                    </h3>
-                    <p className="text-xs text-rose-500/80 mt-1 font-semibold uppercase tracking-wider">
-                      Hành động xóa sạch dữ liệu không thể hoàn tác
-                    </p>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-4 rounded-2xl bg-rose-500/5 border border-rose-500/10">
-                    <div className="space-y-1">
-                      <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">Xóa sạch toàn bộ tài khoản Gmail</span>
-                      <span className="text-[11px] text-slate-400 font-medium leading-normal block">
-                        Thao tác này xóa vĩnh viễn dữ liệu Gmail lưu trữ tập trung trên Cloud Firestore.
-                      </span>
+                {/* Panel 3: Danger Wiping Settings (Admin Only) */}
+                {currentUserProfile?.role === "admin" && (
+                  <div className="p-6 md:p-8 bg-rose-500/5 dark:bg-rose-500/5 border border-rose-500/10 dark:border-rose-500/20 rounded-3xl shadow-sm space-y-6">
+                    <div>
+                      <h3 className="text-base font-bold text-rose-600 dark:text-rose-400 flex items-center gap-2">
+                        <ShieldAlert className="w-5 h-5" />
+                        Vùng nguy hiểm (Danger Zone)
+                      </h3>
+                      <p className="text-xs text-rose-500/80 mt-1 font-semibold uppercase tracking-wider">
+                        Hành động xóa sạch dữ liệu không thể hoàn tác
+                      </p>
                     </div>
-                    <button
-                      onClick={handleWipeData}
-                      className="flex items-center gap-1.5 px-4.5 py-2.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/10 cursor-pointer transition-all active:scale-98 min-h-[44px]"
-                      id="wipe-data-btn"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      Xóa sạch dữ liệu
-                    </button>
+
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-4 rounded-2xl bg-rose-500/5 border border-rose-500/10">
+                      <div className="space-y-1">
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">Xóa sạch toàn bộ tài khoản Gmail</span>
+                        <span className="text-[11px] text-slate-400 font-medium leading-normal block">
+                          Thao tác này xóa vĩnh viễn dữ liệu Gmail lưu trữ tập trung trên Cloud Firestore.
+                        </span>
+                      </div>
+                      <button
+                        onClick={handleWipeData}
+                        className="flex items-center gap-1.5 px-4.5 py-2.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/10 cursor-pointer transition-all active:scale-98 min-h-[44px]"
+                        id="wipe-data-btn"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        Xóa sạch dữ liệu
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
               </motion.div>
             )}
 

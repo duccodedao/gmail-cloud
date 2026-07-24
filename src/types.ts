@@ -45,9 +45,19 @@ export interface AllowedUser {
   id: string; // Document ID (usually the lowercase email)
   email: string;
   name: string;
+  username?: string;
+  isApproved?: boolean;
   role: "admin" | "user";
   emailLimit?: number; // Optional limit for email creation
   note?: string;
+  enableBrowserPush?: boolean;
+  enableSound?: boolean;
+  onlyUnich?: boolean;
+  lastLoginIp?: string;
+  lastLoginLat?: number;
+  lastLoginLng?: number;
+  lastLoginLocation?: string;
+  lastLoginAt?: string;
   createdAt: string;
   updatedAt: string;
 }

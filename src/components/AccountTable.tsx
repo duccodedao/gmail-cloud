@@ -26,6 +26,7 @@ import {
 import { GmailAccount, AccountStatus } from "../types";
 import { motion, AnimatePresence } from "motion/react";
 import { QRCodeModal } from "./QRCodeModal";
+import { copyToClipboard } from "../utils/clipboard";
 
 interface AccountTableProps {
   accounts: GmailAccount[];
@@ -169,43 +170,17 @@ export const AccountTable: React.FC<AccountTableProps> = ({
 
   // Resilient Clipboard Copier
   const copyText = (text: string, key: string, toastMsg: string) => {
-    let success = false;
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text);
-        success = true;
+    copyToClipboard(text).then((success) => {
+      if (success) {
+        addToast(toastMsg, "success");
+        setCopiedStates(prev => ({ ...prev, [key]: true }));
+        setTimeout(() => {
+          setCopiedStates(prev => ({ ...prev, [key]: false }));
+        }, 1000);
+      } else {
+        addToast("Không thể sao chép dữ liệu", "error");
       }
-    } catch (e) {
-      // Ignore and use fallback
-    }
-
-    if (!success) {
-      try {
-        const textarea = document.createElement("textarea");
-        textarea.value = text;
-        textarea.style.position = "fixed";
-        textarea.style.top = "0";
-        textarea.style.left = "0";
-        textarea.style.opacity = "0";
-        document.body.appendChild(textarea);
-        textarea.focus();
-        textarea.select();
-        success = document.execCommand("copy");
-        document.body.removeChild(textarea);
-      } catch (err) {
-        console.error("Fallback copy failed", err);
-      }
-    }
-
-    if (success) {
-      addToast(toastMsg, "success");
-      setCopiedStates(prev => ({ ...prev, [key]: true }));
-      setTimeout(() => {
-        setCopiedStates(prev => ({ ...prev, [key]: false }));
-      }, 1000);
-    } else {
-      addToast("Không thể sao chép dữ liệu", "error");
-    }
+    });
   };
 
   // Copy individual Email
