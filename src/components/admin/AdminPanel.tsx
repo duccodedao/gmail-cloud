@@ -550,11 +550,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </tr>
                     ) : (
                       filteredUsers.map((user) => {
-                        const emailCount = tempEmails.filter(e => e.userEmail.toLowerCase() === user.email.toLowerCase()).length;
+                        const uEmail = user.email ? user.email.toLowerCase().trim() : "";
+                        const uName = user.username ? user.username.toLowerCase().trim() : "";
+
+                        const isUserMatch = (logUserEmail?: string) => {
+                          if (!logUserEmail) return false;
+                          const l = logUserEmail.toLowerCase().trim();
+                          return (uEmail && l === uEmail) || (uName && l === uName);
+                        };
+
+                        const emailCount = tempEmails.filter(e => isUserMatch(e.userEmail)).length;
                         const today = new Date();
                         today.setHours(0, 0, 0, 0);
                         const emailsTodayCount = tempEmails.filter(e => 
-                            e.userEmail.toLowerCase() === user.email.toLowerCase() && 
+                            isUserMatch(e.userEmail) && 
+                            e.createdAt && 
                             new Date(e.createdAt) >= today
                         ).length;
                         return (

@@ -9,6 +9,7 @@ import {
   Clock, 
   User, 
   ChevronRight, 
+  ChevronLeft,
   X, 
   Paperclip, 
   Download, 
@@ -74,13 +75,38 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
     generatedAt: string;
     addedToDashboard: boolean;
     note?: string;
-  }>>([]);
+  }>>(() => {
+    try {
+      const savedLocal = localStorage.getItem("temp_email_history_local");
+      if (savedLocal) {
+        return JSON.parse(savedLocal);
+      }
+    } catch (e) {
+      console.error("Failed to load local email history", e);
+    }
+    return [];
+  });
+
+  // Sync email history to localStorage whenever it updates
+  useEffect(() => {
+    try {
+      localStorage.setItem("temp_email_history_local", JSON.stringify(emailHistory));
+    } catch (e) {
+      console.error("Failed to save local email history", e);
+    }
+  }, [emailHistory]);
   const [otpMap, setOtpMap] = useState<Record<string, string>>({});
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
     typeof window !== "undefined" && "Notification" in window ? Notification.permission : "default"
   );
   const [testEmailCooldown, setTestEmailCooldown] = useState<number>(0);
   const [generateCooldown, setGenerateCooldown] = useState<number>(0);
+  const [historyPage, setHistoryPage] = useState<number>(1);
+
+  // Reset history page when search query changes
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [searchQuery]);
 
   // Cooldown timers
   useEffect(() => {
@@ -130,9 +156,23 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
               }
 
               // Ensure current active loaded email is in the history
+              const loadedItem = {
+                email: info.email,
+                login: info.login,
+                domain: info.domain,
+                generatedAt: new Date().toISOString(),
+                addedToDashboard: false
+              };
+              setEmailHistory((prev) => {
+                if (!prev.some((item) => item.email.toLowerCase() === info.email.toLowerCase())) {
+                  return [loadedItem, ...prev];
+                }
+                return prev;
+              });
+
               if (userProfile?.email) {
                 const history = await tempEmailHistoryRepo.getAll(userProfile.email);
-                if (!history.some((item) => item.email === info.email)) {
+                if (!history.some((item) => item.email.toLowerCase() === info.email.toLowerCase())) {
                   await tempEmailHistoryRepo.create({
                     email: info.email,
                     login: info.login,
@@ -169,6 +209,15 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
             setSelectedMessage(null);
             setCountdown(3);
             localStorage.setItem("temp_gmail_info", JSON.stringify(info));
+
+            const newInitItem = {
+              email: info.email,
+              login: info.login,
+              domain: info.domain,
+              generatedAt: new Date().toISOString(),
+              addedToDashboard: false,
+            };
+            setEmailHistory((prev) => [newInitItem, ...prev.filter((i) => i.email.toLowerCase() !== info.email.toLowerCase())]);
 
             if (userProfile?.email) {
               await tempEmailHistoryRepo.create({
@@ -216,7 +265,16 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
   useEffect(() => {
     if (!userProfile?.email) return;
     const unsubscribe = tempEmailHistoryRepo.subscribe(userProfile.email, (history) => {
-      setEmailHistory(history);
+      if (history) {
+        setEmailHistory((prev) => {
+          const map = new Map<string, any>();
+          prev.forEach((item) => map.set(item.email.toLowerCase(), item));
+          history.forEach((item) => map.set(item.email.toLowerCase(), item));
+          const merged = Array.from(map.values());
+          merged.sort((a, b) => new Date(b.generatedAt).getTime() - new Date(a.generatedAt).getTime());
+          return merged;
+        });
+      }
     });
     return () => unsubscribe();
   }, [userProfile?.email]);
@@ -414,6 +472,19 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
       
       localStorage.setItem("temp_gmail_info", JSON.stringify(info));
 
+      const newGenItem = {
+        email: info.email,
+        login: info.login,
+        domain: info.domain,
+        generatedAt: new Date().toISOString(),
+        addedToDashboard: false,
+      };
+
+      setEmailHistory((prev) => [
+        newGenItem,
+        ...prev.filter((i) => i.email.toLowerCase() !== info.email.toLowerCase()),
+      ]);
+
       // Save to history (Firestore)
       if (userProfile?.email) {
         await tempEmailHistoryRepo.create({
@@ -465,6 +536,15 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
       });
       addToast(`Đã thêm thành công email ${emailInfo.email} vào Dashboard!`, "success");
       setAccountNote(""); // reset note after successful add
+
+      // Update local state history
+      setEmailHistory((prev) =>
+        prev.map((item) =>
+          item.email.toLowerCase() === emailInfo.email.toLowerCase()
+            ? { ...item, addedToDashboard: true, note: finalNote }
+            : item
+        )
+      );
 
       // Update history list item state in Firestore
       if (userProfile?.email) {
@@ -519,7 +599,7 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
 
   const handleDeleteHistoryItem = async (email: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    
+    setEmailHistory((prev) => prev.filter((item) => item.email.toLowerCase() !== email.toLowerCase()));
     try {
       await tempEmailHistoryRepo.delete(email);
       addToast("Đã xóa email khỏi lịch sử!", "success");
@@ -529,9 +609,12 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
   };
 
   const handleClearHistory = async () => {
-    if (!userProfile?.email) return;
+    setEmailHistory([]);
     try {
-      await tempEmailHistoryRepo.clearAll(userProfile.email);
+      localStorage.removeItem("temp_email_history_local");
+      if (userProfile?.email) {
+        await tempEmailHistoryRepo.clearAll(userProfile.email);
+      }
       addToast("Đã xóa toàn bộ lịch sử!", "success");
     } catch (err) {
       addToast("Lỗi khi xóa lịch sử", "error");
@@ -1112,116 +1195,168 @@ export const TempEmailView: React.FC<TempEmailViewProps> = ({ addToast, onAddAcc
             );
           }
 
-          return (
-            <div className="overflow-x-auto border border-slate-150 dark:border-slate-800/80 rounded-2xl max-h-[300px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-850">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-50/80 dark:bg-slate-950/40 border-b border-slate-150 dark:border-slate-800/80 text-slate-500 dark:text-slate-400 font-bold tracking-wider uppercase text-[10px] whitespace-nowrap">
-                    <th className="px-4 py-3 text-center w-12 bg-slate-50/80 dark:bg-slate-950/40 sticky top-0 z-10">STT</th>
-                    <th className="px-4 py-3 bg-slate-50/80 dark:bg-slate-950/40 sticky top-0 z-10">Email tạm thời</th>
-                    <th className="px-4 py-3 w-28 bg-slate-50/80 dark:bg-slate-950/40 sticky top-0 z-10">Thời gian tạo</th>
-                    <th className="px-4 py-3 bg-slate-50/80 dark:bg-slate-950/40 sticky top-0 z-10">Ghi chú</th>
-                    <th className="px-4 py-3 w-28 bg-slate-50/80 dark:bg-slate-950/40 sticky top-0 z-10">Dashboard</th>
-                    <th className="px-4 py-3 w-28 text-right bg-slate-50/80 dark:bg-slate-950/40 sticky top-0 z-10">Thao tác</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
-                  {filteredHistory.map((item, index) => {
-                    const isActive = emailInfo?.email === item.email;
-                    const isCurrentlyInDB = existingEmails?.includes(item.email);
-                    const wasAddedButDeleted = item.addedToDashboard && !isCurrentlyInDB;
-                    
-                    return (
-                      <tr 
-                        key={item.email + index}
-                        onClick={() => handleSwitchToEmail(item)}
-                        className={`group hover:bg-slate-50/50 dark:hover:bg-slate-950/20 transition-colors cursor-pointer ${
-                          isActive
-                            ? "bg-indigo-50/30 dark:bg-indigo-950/10"
-                            : "bg-white dark:bg-slate-900"
-                        }`}
-                      >
-                        {/* index */}
-                        <td className="px-4 py-3 text-center font-mono text-[10px] font-bold text-slate-400 dark:text-slate-500">
-                          {index + 1}
-                        </td>
+          const ITEMS_PER_PAGE = 10;
+          const totalPages = Math.ceil(filteredHistory.length / ITEMS_PER_PAGE) || 1;
+          const safePage = Math.min(Math.max(historyPage, 1), totalPages);
+          const startIndex = (safePage - 1) * ITEMS_PER_PAGE;
+          const paginatedHistory = filteredHistory.slice(startIndex, startIndex + ITEMS_PER_PAGE);
 
-                        {/* email */}
-                        <td className="px-4 py-3 min-w-[200px]">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <span className={`font-mono select-all truncate ${
-                              isActive 
-                                ? "font-black text-indigo-600 dark:text-indigo-400" 
-                                : "font-semibold text-slate-700 dark:text-slate-300"
-                            }`}>
-                              {item.email}
-                            </span>
-                            {isActive && (
-                              <span className="shrink-0 flex h-1.5 w-1.5 relative">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-indigo-500"></span>
+          return (
+            <div className="w-full border border-slate-200/80 dark:border-slate-800/80 rounded-2xl overflow-hidden bg-white dark:bg-slate-900 shadow-inner">
+              <div className="max-h-[380px] overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800">
+                <table className="w-full text-left border-collapse text-xs min-w-[650px] table-fixed">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 font-extrabold tracking-wider uppercase text-[10px] whitespace-nowrap">
+                      <th className="px-3.5 py-3 text-center w-12 shrink-0 bg-slate-100/90 dark:bg-slate-950/90 backdrop-blur-md sticky top-0 z-10">STT</th>
+                      <th className="px-3.5 py-3 w-56 shrink-0 bg-slate-100/90 dark:bg-slate-950/90 backdrop-blur-md sticky top-0 z-10">Email tạm thời</th>
+                      <th className="px-3.5 py-3 w-32 shrink-0 bg-slate-100/90 dark:bg-slate-950/90 backdrop-blur-md sticky top-0 z-10">Thời gian tạo</th>
+                      <th className="px-3.5 py-3 bg-slate-100/90 dark:bg-slate-950/90 backdrop-blur-md sticky top-0 z-10">Ghi chú</th>
+                      <th className="px-3.5 py-3 w-28 shrink-0 bg-slate-100/90 dark:bg-slate-950/90 backdrop-blur-md sticky top-0 z-10">Dashboard</th>
+                      <th className="px-3.5 py-3 w-24 text-right shrink-0 bg-slate-100/90 dark:bg-slate-950/90 backdrop-blur-md sticky top-0 z-10">Thao tác</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                    {paginatedHistory.map((item, index) => {
+                      const actualIndex = startIndex + index;
+                      const isActive = emailInfo?.email === item.email;
+                      const isCurrentlyInDB = existingEmails?.includes(item.email);
+                      const wasAddedButDeleted = item.addedToDashboard && !isCurrentlyInDB;
+                      
+                      return (
+                        <tr 
+                          key={item.email + actualIndex}
+                          onClick={() => handleSwitchToEmail(item)}
+                          className={`group hover:bg-slate-50/50 dark:hover:bg-slate-950/20 transition-colors cursor-pointer ${
+                            isActive
+                              ? "bg-indigo-50/30 dark:bg-indigo-950/10"
+                              : "bg-white dark:bg-slate-900"
+                          }`}
+                        >
+                          {/* index */}
+                          <td className="px-3.5 py-3 text-center font-mono text-[10px] font-bold text-slate-400 dark:text-slate-500">
+                            {actualIndex + 1}
+                          </td>
+
+                          {/* email */}
+                          <td className="px-3.5 py-3 w-56 shrink-0">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className={`font-mono select-all truncate ${
+                                isActive 
+                                  ? "font-black text-indigo-600 dark:text-indigo-400" 
+                                  : "font-semibold text-slate-700 dark:text-slate-300"
+                              }`}>
+                                {item.email}
+                              </span>
+                              {isActive && (
+                                <span className="shrink-0 flex h-1.5 w-1.5 relative">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-indigo-500"></span>
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Created at */}
+                          <td className="px-3.5 py-3 w-32 shrink-0 whitespace-nowrap text-slate-400 dark:text-slate-500 font-medium text-[10px]">
+                            <div className="flex items-center gap-1">
+                              <span>{new Date(item.generatedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}</span>
+                              <span className="text-slate-300 dark:text-slate-700">•</span>
+                              <span>{new Date(item.generatedAt).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}</span>
+                            </div>
+                          </td>
+
+                          {/* note */}
+                          <td className="px-3.5 py-3 text-slate-700 dark:text-slate-300 font-medium truncate max-w-[200px]" title={item.note || "Không có ghi chú"}>
+                            {item.note || <span className="text-slate-300 dark:text-slate-700 font-normal">—</span>}
+                          </td>
+
+                          {/* dashboard status */}
+                          <td className="px-3.5 py-3 w-28 shrink-0 whitespace-nowrap">
+                            {isCurrentlyInDB ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[9px] font-extrabold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                Đã thêm
+                              </span>
+                            ) : wasAddedButDeleted ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[9px] font-extrabold bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
+                                <XCircle className="w-3.5 h-3.5" />
+                                Đã xóa
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[9px] font-extrabold bg-slate-100 dark:bg-slate-850 text-slate-400 dark:text-slate-500 border border-transparent">
+                                Chưa thêm
                               </span>
                             )}
-                          </div>
-                        </td>
+                          </td>
 
-                        {/* Created at */}
-                        <td className="px-4 py-3 whitespace-nowrap text-slate-400 dark:text-slate-500 font-medium text-[10px]">
-                          <div className="flex items-center gap-1">
-                            <span>{new Date(item.generatedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}</span>
-                            <span className="text-slate-300 dark:text-slate-700">•</span>
-                            <span>{new Date(item.generatedAt).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}</span>
-                          </div>
-                        </td>
-
-                        {/* note */}
-                        <td className="px-4 py-3 min-w-[220px] text-slate-700 dark:text-slate-300 font-medium whitespace-normal break-words leading-relaxed" title={item.note || "Không có ghi chú"}>
-                          {item.note || <span className="text-slate-300 dark:text-slate-700 font-normal">—</span>}
-                        </td>
-
-                        {/* dashboard status */}
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          {isCurrentlyInDB ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[9px] font-extrabold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                              <CheckCircle2 className="w-3.5 h-3.5" />
-                              Đã thêm
-                            </span>
-                          ) : wasAddedButDeleted ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[9px] font-extrabold bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
-                              <XCircle className="w-3.5 h-3.5" />
-                              Đã xóa
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[9px] font-extrabold bg-slate-100 dark:bg-slate-850 text-slate-400 dark:text-slate-500 border border-transparent">
-                              Chưa thêm
-                            </span>
-                          )}
-                        </td>
-
-                        {/* Action column */}
-                        <td className="px-4 py-3 text-right whitespace-nowrap">
-                          <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
+                          {/* Action column */}
+                          <td className="px-3.5 py-3 w-24 shrink-0 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  onClick={(e) => handleDeleteHistoryItem(item.email, e)}
+                                  className="p-1.5 rounded-lg bg-slate-50 hover:bg-rose-50 dark:bg-slate-950/40 dark:hover:bg-rose-950/60 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors duration-150 border border-slate-100 dark:border-slate-800"
+                                  title="Xóa khỏi lịch sử"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                               <button
-                                onClick={(e) => handleDeleteHistoryItem(item.email, e)}
-                                className="p-1.5 rounded-lg bg-slate-50 hover:bg-rose-50 dark:bg-slate-950/40 dark:hover:bg-rose-950/60 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors duration-150 border border-slate-100 dark:border-slate-800"
-                                title="Xóa khỏi lịch sử"
+                                onClick={() => handleSwitchToEmail(item)}
+                                className="p-1.5 rounded-lg bg-slate-50 hover:bg-indigo-50 dark:bg-slate-950/40 dark:hover:bg-indigo-950/60 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors duration-150 border border-slate-100 dark:border-slate-800"
+                                title="Chuyển sang hòm thư này"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
                               </button>
-                            <button
-                              onClick={() => handleSwitchToEmail(item)}
-                              className="p-1.5 rounded-lg bg-slate-50 hover:bg-indigo-50 dark:bg-slate-950/40 dark:hover:bg-indigo-950/60 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors duration-150 border border-slate-100 dark:border-slate-800"
-                              title="Chuyển sang hòm thư này"
-                            >
-                              <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination bar */}
+              <div className="px-4 py-3 bg-slate-50/90 dark:bg-slate-950/70 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                <div className="text-slate-500 dark:text-slate-400 font-medium">
+                  Hiển thị <span className="font-bold text-slate-800 dark:text-slate-200">{startIndex + 1} - {Math.min(startIndex + ITEMS_PER_PAGE, filteredHistory.length)}</span> trong tổng số <span className="font-bold text-slate-800 dark:text-slate-200">{filteredHistory.length}</span> email (Trang {safePage}/{totalPages})
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setHistoryPage((prev) => Math.max(prev - 1, 1))}
+                    disabled={safePage <= 1}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold transition-colors cursor-pointer"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                    Trước
+                  </button>
+
+                  <div className="flex items-center gap-1 px-1">
+                    {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
+                      <button
+                        key={pageNum}
+                        onClick={() => setHistoryPage(pageNum)}
+                        className={`w-7 h-7 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          pageNum === safePage
+                            ? "bg-indigo-600 text-white shadow-sm"
+                            : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800"
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={() => setHistoryPage((prev) => Math.min(prev + 1, totalPages))}
+                    disabled={safePage >= totalPages}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold transition-colors cursor-pointer"
+                  >
+                    Sau
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
             </div>
           );
         })()}

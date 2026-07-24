@@ -262,9 +262,19 @@ export default function App() {
         }
       }
       addToast("Đăng nhập thành công!", "success");
-    } catch (error) {
-      console.error("Login Error", error);
-      addToast("Đăng nhập thất bại", "error");
+    } catch (error: any) {
+      if (
+        error?.code === "auth/popup-closed-by-user" ||
+        error?.code === "auth/cancelled-popup-request"
+      ) {
+        console.info("User closed login popup before completing authentication.");
+        addToast("Cửa sổ đăng nhập đã đóng.", "info");
+      } else if (error?.code === "auth/popup-blocked") {
+        addToast("Trình duyệt đã chặn cửa sổ bật lên (popup). Vui lòng cho phép popup để đăng nhập.", "warning");
+      } else {
+        console.error("Login Error:", error);
+        addToast("Đăng nhập thất bại. Vui lòng thử lại.", "error");
+      }
     }
   };
 
